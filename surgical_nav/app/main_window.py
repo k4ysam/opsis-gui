@@ -174,10 +174,13 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Initialise all VTKWidget instances inside the stack
+        # Initialise VTK widgets in the workflow stack pages
         for i in range(self._stack.count()):
-            page = self._stack.widget(i)
-            _initialize_vtk_children(page)
+            _initialize_vtk_children(self._stack.widget(i))
+        # Initialise VTK widgets in the right-hand viewer panel
+        viewer_panel = self._splitter.widget(1)
+        if viewer_panel is not None:
+            _initialize_vtk_children(viewer_panel)
 
 
 def _initialize_vtk_children(widget: QWidget):
