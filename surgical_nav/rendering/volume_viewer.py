@@ -149,6 +149,27 @@ class VolumeViewer(QWidget):
         self._pointer_actor.VisibilityOff()
         self._vtk_widget.render()
 
+    def set_trajectory(self, entry: np.ndarray, target: np.ndarray):
+        """Draw (or update) a trajectory line from *entry* to *target* in 3-D."""
+        entry  = np.asarray(entry,  dtype=float)
+        target = np.asarray(target, dtype=float)
+
+        if not hasattr(self, "_traj_actor"):
+            self._traj_source = vtk.vtkLineSource()
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(self._traj_source.GetOutputPort())
+            self._traj_actor = vtk.vtkActor()
+            self._traj_actor.SetMapper(mapper)
+            self._traj_actor.GetProperty().SetColor(1.0, 0.8, 0.0)   # yellow
+            self._traj_actor.GetProperty().SetLineWidth(2.0)
+            self._vtk_widget.get_renderer().AddActor(self._traj_actor)
+
+        self._traj_source.SetPoint1(*entry)
+        self._traj_source.SetPoint2(*target)
+        self._traj_source.Update()
+        self._traj_actor.VisibilityOn()
+        self._vtk_widget.render()
+
     # ------------------------------------------------------------------
     # Public API — camera
     # ------------------------------------------------------------------
