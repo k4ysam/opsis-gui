@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from PySide6.QtCore import Qt
 
 from surgical_nav.app.main_window import MainWindow
+from surgical_nav.app.settings import AppSettings
+from surgical_nav.app.scene_graph import SceneGraph
 from surgical_nav.rendering.volume_viewer import VolumeViewer
 from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
@@ -17,6 +19,8 @@ from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
 from surgical_nav.workflow.registration_page import RegistrationPage
 from surgical_nav.workflow.navigation_page import NavigationPage
+from surgical_nav.workflow.landmark_manager_page import LandmarkManagerPage
+from surgical_nav.persistence.case_manager import CaseManager
 from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
 
 
@@ -24,6 +28,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SurgicalNav")
     app.setOrganizationName("OpenNav")
+
+    settings = AppSettings()
+    case_mgr = CaseManager()
 
     window = MainWindow()
 
@@ -39,6 +46,17 @@ def main():
     lm.set_layout("6up")
     window.set_viewer_panel(viewer_container)
 
+    # Shared state for auto-save
+    _current_case:  list = [None]       # mutable cell
+    _current_sitk:  list = [None]
+
+    def _auto_save(stage: int):
+        name = _current_case[0]
+        if name:
+            case_mgr.save_case(name, SceneGraph.instance(),
+                               sitk_image=_current_sitk[0], stage=stage)
+            settings.last_case = name
+
     # --- Stage 0: Patients ---
     patients_page = PatientsPage()
 
@@ -48,27 +66,26 @@ def main():
         coronal.set_volume(vtk_image)
         sagittal.set_volume(vtk_image)
         window.set_case_name(case_name)
+        _current_case[0] = case_name
+        _current_sitk[0] = sitk_image
 
     patients_page.volume_loaded.connect(on_volume_loaded)
     patients_page.stage_complete.connect(lambda: window.mark_stage_complete(0))
+    patients_page.stage_complete.connect(lambda: _auto_save(0))
     patients_page.status_message.connect(window.statusBar().showMessage)
 
     window.add_page(patients_page)   # index 0
 
     # --- Stage 1: Planning ---
     planning_page = PlanningPage()
-
-    def on_planning_complete():
-        window.mark_stage_complete(1)
-
-    planning_page.stage_complete.connect(on_planning_complete)
+    planning_page.stage_complete.connect(lambda: window.mark_stage_complete(1))
+    planning_page.stage_complete.connect(lambda: _auto_save(1))
     planning_page.status_message.connect(window.statusBar().showMessage)
     planning_page.skin_mesh_ready.connect(volume_viewer.add_surface)
     planning_page.target_mesh_ready.connect(volume_viewer.add_surface)
 
     window.add_page(planning_page)   # index 1
 
-    # Activate planning page when patients stage completes
     patients_page.stage_complete.connect(
         lambda: (planning_page.on_enter(), window.set_page(1))
     )
@@ -76,6 +93,7 @@ def main():
     # --- Stage 2: Registration ---
     registration_page = RegistrationPage()
     registration_page.stage_complete.connect(lambda: window.mark_stage_complete(2))
+    registration_page.stage_complete.connect(lambda: _auto_save(2))
     registration_page.status_message.connect(window.statusBar().showMessage)
     window.add_page(registration_page)   # index 2
 
@@ -92,13 +110,14 @@ def main():
         lambda: (navigation_page.on_enter(), window.set_page(3))
     )
 
-    # --- Stage 4: placeholder until implemented ---
-    placeholder = QLabel(
-        "Landmarks — coming in a future phase",
-        alignment=Qt.AlignmentFlag.AlignCenter,
+    # --- Stage 4: Landmark Manager ---
+    landmark_page = LandmarkManagerPage()
+    landmark_page.status_message.connect(window.statusBar().showMessage)
+    window.add_page(landmark_page)   # index 4
+
+    navigation_page.stage_complete.connect(
+        lambda: (landmark_page.on_enter(), window.set_page(4))
     )
-    placeholder.setStyleSheet("font-size: 18px; color: #888;")
-    window.add_page(placeholder)
 
     # --- Tracking: MockIGTLClient for development/testing ---
     tracker = MockIGTLClient(hz=10.0)
