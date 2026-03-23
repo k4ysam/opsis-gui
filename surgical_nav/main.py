@@ -15,6 +15,7 @@ from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
+from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
 
 
 def main():
@@ -79,9 +80,28 @@ def main():
         placeholder.setStyleSheet("font-size: 18px; color: #888;")
         window.add_page(placeholder)
 
+    # --- Tracking: MockIGTLClient for development/testing ---
+    tracker = MockIGTLClient(hz=10.0)
+
+    def on_tool_status(name: str, status: str):
+        tool_key = "Pointer" if "Pointer" in name else "HeadFrame"
+        window.set_tool_status(tool_key, status)
+
+    tracker.connected.connect(lambda: window.set_plus_status(True))
+    tracker.disconnected.connect(lambda: window.set_plus_status(False))
+    tracker.tool_status_changed.connect(on_tool_status)
+    tracker.transform_received.connect(
+        lambda name, m: volume_viewer.set_pointer_transform(m)
+        if name == "PointerToTracker" else None
+    )
+    tracker.start()
+
     window.set_page(0)
     window.show()
-    sys.exit(app.exec())
+
+    ret = app.exec()
+    tracker.stop()
+    sys.exit(ret)
 
 
 if __name__ == "__main__":
