@@ -16,6 +16,7 @@ from surgical_nav.rendering.layout_manager import LayoutManager
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
 from surgical_nav.workflow.registration_page import RegistrationPage
+from surgical_nav.workflow.navigation_page import NavigationPage
 from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
 
 
@@ -82,14 +83,22 @@ def main():
         lambda: (registration_page.on_enter(), window.set_page(2))
     )
 
-    # --- Stages 3–4: placeholder until implemented ---
-    for text in ("Navigation", "Landmarks"):
-        placeholder = QLabel(
-            f"{text} — coming in a future phase",
-            alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        placeholder.setStyleSheet("font-size: 18px; color: #888;")
-        window.add_page(placeholder)
+    # --- Stage 3: Navigation ---
+    navigation_page = NavigationPage([axial, coronal, sagittal], volume_viewer)
+    navigation_page.status_message.connect(window.statusBar().showMessage)
+    window.add_page(navigation_page)   # index 3
+
+    registration_page.stage_complete.connect(
+        lambda: (navigation_page.on_enter(), window.set_page(3))
+    )
+
+    # --- Stage 4: placeholder until implemented ---
+    placeholder = QLabel(
+        "Landmarks — coming in a future phase",
+        alignment=Qt.AlignmentFlag.AlignCenter,
+    )
+    placeholder.setStyleSheet("font-size: 18px; color: #888;")
+    window.add_page(placeholder)
 
     # --- Tracking: MockIGTLClient for development/testing ---
     tracker = MockIGTLClient(hz=10.0)
@@ -106,6 +115,11 @@ def main():
         if name == "PointerToTracker" else None
     )
     tracker.transform_received.connect(registration_page.receive_transform)
+    tracker.transform_received.connect(navigation_page.on_transform)
+    tracker.tool_status_changed.connect(
+        lambda name, status: navigation_page.set_pointer_status(status)
+        if "Pointer" in name else None
+    )
     tracker.start()
 
     window.set_page(0)
