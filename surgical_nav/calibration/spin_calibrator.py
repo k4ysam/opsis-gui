@@ -108,16 +108,20 @@ class SpinCalibrator:
         # Tracker origins (translation part of each transform)
         origins = np.stack([T[:3, 3] for T in self._samples])   # (N, 3)
 
-        # PCA on centre-subtracted origins
+        # PCA on centre-subtracted tracker origins.
+        # When the tool spins around its shaft, origins trace a CIRCLE in
+        # the plane perpendicular to the shaft.  The shaft direction is
+        # therefore the MINIMUM-eigenvalue eigenvector (normal to the plane).
+        # Quality check: the smallest eigenvalue must be much smaller than
+        # the sum — i.e. motion is planar.
         centre = origins.mean(axis=0)
         centred = origins - centre
 
         cov = centred.T @ centred / n
         eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # eigh returns ascending eigenvalues: [min, mid, max]
 
-        # eigh returns ascending eigenvalues; largest is last
-        primary_axis = eigenvectors[:, -1]
-        total_var    = eigenvalues.sum()
+        total_var = eigenvalues.sum()
         if total_var < 1e-12:
             return SpinResult(
                 shaft_in_tool=np.array([0., 0., 1.]),
@@ -126,25 +130,28 @@ class SpinCalibrator:
                 message="No motion detected — all tracker origins are identical",
             )
 
-        linearity = float(eigenvalues[-1] / total_var)
+        # Planarity: fraction of variance NOT on the shaft axis.
+        # For a perfect circle: eigenvalues = [0, v, v] → planarity = 1.
+        # Stored in `linearity` field for API compatibility.
+        planarity = float(1.0 - eigenvalues[0] / total_var)
+        shaft_world = eigenvectors[:, 0]   # min-eigenvalue direction = shaft
 
-        if linearity < self._min_linearity:
+        if planarity < self._min_linearity:
             return SpinResult(
                 shaft_in_tool=np.array([0., 0., 1.]),
-                shaft_in_world=primary_axis,
-                linearity=linearity, n_samples=n, success=False,
+                shaft_in_world=shaft_world,
+                linearity=planarity, n_samples=n, success=False,
                 message=(
-                    f"Linearity {linearity:.3f} below threshold "
+                    f"Planarity {planarity:.3f} below threshold "
                     f"{self._min_linearity:.3f}. Ensure pure spin motion."
                 ),
             )
 
         # Express shaft in each tool's local frame and average
-        # shaft_in_tool_i = R_i.T @ shaft_in_world
         shaft_local_sum = np.zeros(3)
         for T in self._samples:
             R = T[:3, :3]
-            shaft_local_sum += R.T @ primary_axis
+            shaft_local_sum += R.T @ shaft_world
         shaft_in_tool = shaft_local_sum / n
         norm = np.linalg.norm(shaft_in_tool)
         if norm < 1e-9:
@@ -154,8 +161,8 @@ class SpinCalibrator:
 
         return SpinResult(
             shaft_in_tool=shaft_in_tool,
-            shaft_in_world=primary_axis,
-            linearity=linearity,
+            shaft_in_world=shaft_world,
+            linearity=planarity,
             n_samples=n,
             success=True,
         )
