@@ -14,6 +14,7 @@ from surgical_nav.rendering.volume_viewer import VolumeViewer
 from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
 from surgical_nav.workflow.patients_page import PatientsPage
+from surgical_nav.workflow.planning_page import PlanningPage
 
 
 def main():
@@ -29,9 +30,6 @@ def main():
     coronal  = SliceViewer("coronal")
     sagittal = SliceViewer("sagittal")
 
-    # Attach layout manager to main window's central area
-    # (The layout manager lives inside the Patients/Planning/Navigation pages;
-    #  for now we embed a 6-up view directly in a container page.)
     from PySide6.QtWidgets import QWidget, QVBoxLayout
     viewer_container = QWidget()
     lm = LayoutManager(viewer_container)
@@ -54,8 +52,26 @@ def main():
 
     window.add_page(patients_page)   # index 0
 
-    # --- Stages 1–4: placeholder until implemented ---
-    for text in ("Planning", "Registration", "Navigation", "Landmarks"):
+    # --- Stage 1: Planning ---
+    planning_page = PlanningPage()
+
+    def on_planning_complete():
+        window.mark_stage_complete(1)
+
+    planning_page.stage_complete.connect(on_planning_complete)
+    planning_page.status_message.connect(window.statusBar().showMessage)
+    planning_page.skin_mesh_ready.connect(volume_viewer.add_surface)
+    planning_page.target_mesh_ready.connect(volume_viewer.add_surface)
+
+    window.add_page(planning_page)   # index 1
+
+    # Activate planning page when patients stage completes
+    patients_page.stage_complete.connect(
+        lambda: (planning_page.on_enter(), window.set_page(1))
+    )
+
+    # --- Stages 2–4: placeholder until implemented ---
+    for text in ("Registration", "Navigation", "Landmarks"):
         placeholder = QLabel(
             f"{text} — coming in a future phase",
             alignment=Qt.AlignmentFlag.AlignCenter

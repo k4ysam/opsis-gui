@@ -106,6 +106,19 @@ class VolumeViewer(QWidget):
             self._model_actors[node_id].SetVisibility(visible)
             self._vtk_widget.render()
 
+    def add_surface(self, poly_data: vtk.vtkPolyData,
+                    color=(0.9, 0.75, 0.65), opacity: float = 0.6):
+        """Add an anonymous surface actor (used by PlanningPage signals)."""
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(poly_data)
+        mapper.ScalarVisibilityOff()
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(*color)
+        actor.GetProperty().SetOpacity(opacity)
+        self._vtk_widget.get_renderer().AddActor(actor)
+        self._vtk_widget.render()
+
     # ------------------------------------------------------------------
     # Public API — pointer / needle
     # ------------------------------------------------------------------
