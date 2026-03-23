@@ -15,6 +15,7 @@ from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
+from surgical_nav.workflow.registration_page import RegistrationPage
 from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
 
 
@@ -71,8 +72,18 @@ def main():
         lambda: (planning_page.on_enter(), window.set_page(1))
     )
 
-    # --- Stages 2–4: placeholder until implemented ---
-    for text in ("Registration", "Navigation", "Landmarks"):
+    # --- Stage 2: Registration ---
+    registration_page = RegistrationPage()
+    registration_page.stage_complete.connect(lambda: window.mark_stage_complete(2))
+    registration_page.status_message.connect(window.statusBar().showMessage)
+    window.add_page(registration_page)   # index 2
+
+    planning_page.stage_complete.connect(
+        lambda: (registration_page.on_enter(), window.set_page(2))
+    )
+
+    # --- Stages 3–4: placeholder until implemented ---
+    for text in ("Navigation", "Landmarks"):
         placeholder = QLabel(
             f"{text} — coming in a future phase",
             alignment=Qt.AlignmentFlag.AlignCenter
@@ -94,6 +105,7 @@ def main():
         lambda name, m: volume_viewer.set_pointer_transform(m)
         if name == "PointerToTracker" else None
     )
+    tracker.transform_received.connect(registration_page.receive_transform)
     tracker.start()
 
     window.set_page(0)
