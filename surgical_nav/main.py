@@ -6,7 +6,7 @@ import os
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from PySide6.QtCore import Qt
 
 from surgical_nav.app.main_window import MainWindow
@@ -24,17 +24,17 @@ def main():
 
     window = MainWindow()
 
-    # --- Shared rendering widgets ---
+    # --- Shared rendering widgets (right-hand viewer panel) ---
     volume_viewer = VolumeViewer()
     axial    = SliceViewer("axial")
     coronal  = SliceViewer("coronal")
     sagittal = SliceViewer("sagittal")
 
-    from PySide6.QtWidgets import QWidget, QVBoxLayout
     viewer_container = QWidget()
     lm = LayoutManager(viewer_container)
     lm.set_viewers(volume_viewer, axial, coronal, sagittal)
     lm.set_layout("6up")
+    window.set_viewer_panel(viewer_container)
 
     # --- Stage 0: Patients ---
     patients_page = PatientsPage()

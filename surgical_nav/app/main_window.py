@@ -17,7 +17,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QToolBar, QStatusBar, QLabel, QStackedWidget, QSizePolicy,
+    QToolBar, QStatusBar, QLabel, QStackedWidget, QSizePolicy, QSplitter,
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QColor
@@ -48,15 +48,23 @@ class MainWindow(QMainWindow):
         self._completed_stages: set[int] = set()
 
         # --- Central area ---------------------------------------------------
-        central = QWidget()
-        self.setCentralWidget(central)
-        central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(0, 0, 0, 0)
-        central_layout.setSpacing(0)
+        # QSplitter: left = workflow controls stack, right = viewer panel
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.setCentralWidget(self._splitter)
 
-        # Page stack
+        # Left panel: workflow page controls
         self._stack = QStackedWidget()
-        central_layout.addWidget(self._stack)
+        self._stack.setMinimumWidth(260)
+        self._stack.setMaximumWidth(420)
+        self._splitter.addWidget(self._stack)
+
+        # Right panel: placeholder until set_viewer_panel() is called
+        self._viewer_panel = QLabel(
+            "No viewer", alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        self._splitter.addWidget(self._viewer_panel)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
 
         # --- Toolbar --------------------------------------------------------
         self._toolbar = QToolBar("Workflow")
@@ -64,11 +72,20 @@ class MainWindow(QMainWindow):
         self._toolbar.setIconSize(QSize(24, 24))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._toolbar)
 
+        _tooltips = [
+            "Load a DICOM volume to begin",
+            "Segment anatomy and plan trajectory (requires loaded volume)",
+            "Calibrate instruments and register patient (requires planning)",
+            "Real-time navigation (requires registration)",
+            "Manage anatomical landmarks",
+        ]
+
         self._stage_actions: list[QAction] = []
-        for label, idx, _ in _STAGES:
+        for (label, idx, _), tip in zip(_STAGES, _tooltips):
             action = QAction(label, self)
             action.setCheckable(True)
             action.setData(idx)
+            action.setToolTip(tip)
             action.triggered.connect(self._on_stage_action)
             self._toolbar.addAction(action)
             self._stage_actions.append(action)
@@ -108,6 +125,14 @@ class MainWindow(QMainWindow):
 
     def current_page(self) -> int:
         return self._stack.currentIndex()
+
+    def set_viewer_panel(self, widget: QWidget):
+        """Replace the right-hand viewer panel with *widget*."""
+        old = self._splitter.widget(1)
+        self._splitter.replaceWidget(1, widget)
+        self._splitter.setStretchFactor(1, 1)
+        if old is not None and old is not widget:
+            old.setParent(None)
 
     # ------------------------------------------------------------------
     # Stage gate
