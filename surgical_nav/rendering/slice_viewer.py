@@ -54,10 +54,12 @@ class SliceViewer(QWidget):
         self._vtk_image: Optional[vtk.vtkImageData] = None
 
         # ------ VTK pipeline ------------------------------------------
+        self._empty_image = self._make_empty_image()
         self._reslice = vtk.vtkImageReslice()
         self._reslice.SetOutputDimensionality(2)
         self._reslice.SetInterpolationModeToLinear()
         self._reslice.SetBackgroundLevel(-1000)   # HU air outside FOV
+        self._reslice.SetInputData(self._empty_image)
 
         self._lut = vtk.vtkWindowLevelLookupTable()
         self._lut.SetWindow(400)
@@ -70,6 +72,7 @@ class SliceViewer(QWidget):
 
         self._image_actor = vtk.vtkImageActor()
         self._image_actor.GetMapper().SetInputConnection(self._color_map.GetOutputPort())
+        self._image_actor.VisibilityOff()
 
         self._renderer = vtk.vtkRenderer()
         self._renderer.SetBackground(0.0, 0.0, 0.0)
@@ -126,6 +129,7 @@ class SliceViewer(QWidget):
         """Attach a vtkImageData volume and reset the slice position."""
         self._vtk_image = vtk_image_data
         self._reslice.SetInputData(vtk_image_data)
+        self._image_actor.VisibilityOn()
 
         # Build reslice axes for this plane, centred on the volume
         bounds = vtk_image_data.GetBounds()
@@ -240,6 +244,15 @@ class SliceViewer(QWidget):
         pts.SetPoint(0, *p1)
         pts.SetPoint(1, *p2)
         pts.Modified()
+
+    @staticmethod
+    def _make_empty_image() -> vtk.vtkImageData:
+        """Return a tiny placeholder image so initial renders are valid."""
+        image = vtk.vtkImageData()
+        image.SetDimensions(1, 1, 1)
+        image.AllocateScalars(vtk.VTK_SHORT, 1)
+        image.GetPointData().GetScalars().Fill(-1000)
+        return image
 
     def closeEvent(self, event):
         self._interactor.Finalize()
