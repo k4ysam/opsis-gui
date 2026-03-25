@@ -63,9 +63,10 @@ def main():
     def on_volume_loaded(vtk_image, sitk_image, case_name):
         if vtk_image is not None:
             volume_viewer.set_volume(vtk_image)
-            axial.set_volume(vtk_image)
-            coronal.set_volume(vtk_image)
-            sagittal.set_volume(vtk_image)
+        if sitk_image is not None:
+            axial.set_sitk_image(sitk_image)
+            coronal.set_sitk_image(sitk_image)
+            sagittal.set_sitk_image(sitk_image)
         window.set_case_name(case_name)
         _current_case[0] = case_name
         _current_sitk[0] = sitk_image
