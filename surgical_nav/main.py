@@ -6,13 +6,6 @@ import os
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Run without VTK for UI-only testing: SURGICAL_NAV_NO_VTK=1 python3 -m surgical_nav.main
-if os.environ.get("SURGICAL_NAV_NO_VTK") == "1":
-    for _m in ["vtkmodules", "vtkmodules.all", "vtkmodules.qt",
-               "vtkmodules.qt.QVTKRenderWindowInteractor",
-               "vtkmodules.util", "vtkmodules.util.numpy_support"]:
-        sys.modules[_m] = None  # type: ignore
-
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from PySide6.QtCore import Qt
 

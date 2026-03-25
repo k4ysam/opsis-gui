@@ -16,12 +16,6 @@ from typing import Optional, List
 
 import numpy as np
 import SimpleITK as sitk
-try:
-    import vtkmodules.all as vtk
-    _VTK = True
-except ImportError:
-    vtk = None  # type: ignore
-    _VTK = False
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -81,10 +75,10 @@ class PlanningPage(WorkflowPage):
         self._seg_thread: Optional[QThread] = None
 
         # Cached data
-        self._sitk_image:   Optional[sitk.Image]      = None
-        self._vtk_image:    Optional[vtk.vtkImageData] = None
-        self._skin_label:   Optional[sitk.Image]      = None
-        self._target_label: Optional[sitk.Image]      = None
+        self._sitk_image:   Optional[sitk.Image] = None
+        self._vtk_image:    Optional[object]    = None
+        self._skin_label:   Optional[sitk.Image] = None
+        self._target_label: Optional[sitk.Image] = None
 
         self._build_ui()
 
@@ -164,7 +158,7 @@ class PlanningPage(WorkflowPage):
         self._seg_worker = worker
         thread.start()
 
-    def _on_skin_done(self, label: sitk.Image, mesh: vtk.vtkPolyData):
+    def _on_skin_done(self, label: sitk.Image, mesh):
         if self._seg_thread:
             self._seg_thread.quit()
         self._seg_btn.setEnabled(True)
@@ -178,9 +172,7 @@ class PlanningPage(WorkflowPage):
             opacity=0.6,
         )
         self._scene_graph.add_node(model_node)
-        self._seg_status.setText(
-            f"Skin segmented — {mesh.GetNumberOfPoints():,} points"
-        )
+        self._seg_status.setText("Skin segmented")
         self.skin_mesh_ready.emit(mesh)
 
     def _on_skin_error(self, msg: str):
