@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 import pytest
 import SimpleITK as sitk
-import vtkmodules.all as vtk
 from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 
@@ -34,15 +33,10 @@ def _push_volume():
     sitk_img = sitk.GetImageFromArray(arr)
     sitk_img.SetSpacing((1.0, 1.0, 1.0))
 
-    vtk_img = vtk.vtkImageData()
-    vtk_img.SetDimensions(20, 20, 20)
-    vtk_img.SetSpacing(1.0, 1.0, 1.0)
-    vtk_img.AllocateScalars(vtk.VTK_FLOAT, 1)
-
     node = VolumeNode(node_id="ACTIVE_VOLUME", name="test",
-                      sitk_image=sitk_img, vtk_image_data=vtk_img)
+                      sitk_image=sitk_img, vtk_image_data=None)
     SceneGraph.instance().add_node(node)
-    return sitk_img, vtk_img
+    return sitk_img, None
 
 
 # ---------------------------------------------------------------------------
