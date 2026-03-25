@@ -142,9 +142,12 @@ class PlanningPage(WorkflowPage):
         self._seg_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._seg_status)
 
+        nav_row = QHBoxLayout()
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Target Segmentation")
         next_btn.clicked.connect(lambda: self._go_to_step(2))
-        layout.addWidget(next_btn)
+        nav_row.addWidget(next_btn)
+        layout.addLayout(nav_row)
         return box
 
     def _run_skin_segmentation(self):
@@ -231,9 +234,15 @@ class PlanningPage(WorkflowPage):
         self._target_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._target_status)
 
+        nav_row = QHBoxLayout()
+        back_btn = QPushButton("← Back")
+        back_btn.clicked.connect(lambda: self._go_to_step(1))
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Trajectory")
         next_btn.clicked.connect(lambda: self._go_to_step(3))
-        layout.addWidget(next_btn)
+        nav_row.addWidget(next_btn)
+        layout.addLayout(nav_row)
         return box
 
     def seed_target_at_ijk(self, ijk: tuple):
@@ -282,9 +291,15 @@ class PlanningPage(WorkflowPage):
         self._traj_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._traj_status)
 
+        nav_row = QHBoxLayout()
+        back_btn = QPushButton("← Back")
+        back_btn.clicked.connect(lambda: self._go_to_step(2))
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Landmarks")
         next_btn.clicked.connect(lambda: self._go_to_step(4))
-        layout.addWidget(next_btn)
+        nav_row.addWidget(next_btn)
+        layout.addLayout(nav_row)
         return box
 
     def _on_entry_btn_toggled(self, checked: bool):
@@ -378,9 +393,15 @@ class PlanningPage(WorkflowPage):
         self._lm_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._lm_status)
 
+        nav_row = QHBoxLayout()
+        back_btn = QPushButton("← Back")
+        back_btn.clicked.connect(lambda: self._go_to_step(3))
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
         done_btn = QPushButton("Complete Planning")
         done_btn.clicked.connect(self._complete_planning)
-        layout.addWidget(done_btn)
+        nav_row.addWidget(done_btn)
+        layout.addLayout(nav_row)
         return box
 
     def place_landmark(self, world_xyz: np.ndarray):
