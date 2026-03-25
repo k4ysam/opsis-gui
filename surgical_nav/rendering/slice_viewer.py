@@ -1,6 +1,7 @@
 """SliceViewer: single-plane MPR view using Qt/numpy (no VTK required).
 
 Displays axial, coronal, or sagittal slices from a SimpleITK image.
+Voxel spacing is respected so images have the correct physical aspect ratio.
 A horizontal slider at the bottom lets the user scroll through slices.
 Window/level is auto-computed from the 2nd–98th percentile on load.
 
@@ -19,8 +20,8 @@ import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, QSlider,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QCursor, QPointF
+from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QCursor
 
 _PLANE_LABELS = {
     "axial":    "Axial",
@@ -28,7 +29,6 @@ _PLANE_LABELS = {
     "sagittal": "Sagittal",
 }
 
-# Marker colours
 _ENTRY_COLOR  = QColor(50, 220, 50)
 _TARGET_COLOR = QColor(220, 70, 70)
 _LM_COLOR     = QColor(255, 200, 0)
@@ -37,8 +37,7 @@ _LM_COLOR     = QColor(255, 200, 0)
 class SliceViewer(QWidget):
     """2-D slice viewer for one anatomical plane."""
 
-    # Emitted when the user places a point in the active mode.
-    # Arguments: mode ("entry" | "target" | "landmark"), world_x, world_y, world_z
+    # (mode, world_x, world_y, world_z) emitted on click in an active mode
     point_placed = Signal(str, float, float, float)
 
     def __init__(self, plane: str = "axial", parent: Optional[QWidget] = None):
@@ -48,19 +47,21 @@ class SliceViewer(QWidget):
 
         self._plane = plane
         self._volume: Optional[np.ndarray] = None   # (z, y, x) float32
-        self._origin: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-        self._spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._origin: Tuple[float, ...] = (0.0, 0.0, 0.0)
+        self._spacing: Tuple[float, ...] = (1.0, 1.0, 1.0)
         self._slice_idx: int = 0
         self._window: float = 400.0
         self._level: float = 40.0
-
-        # Interaction mode
         self._mode: str = ""
 
-        # Stored 3-D world coordinates for overlay markers
+        # Overlay markers
         self._entry_xyz:  Optional[np.ndarray] = None
         self._target_xyz: Optional[np.ndarray] = None
-        self._landmark_xyzs: list = []     # list of np.ndarray
+        self._landmark_xyzs: list = []
+
+        # Display-space scales (set by _update_display, used by click handler)
+        # (scale_x, scale_y, off_x, off_y) from original image pixels → label pixels
+        self._disp_transform: Tuple[float, float, float, float] = (1.0, 1.0, 0.0, 0.0)
 
         # ---- layout ----
         layout = QVBoxLayout(self)
@@ -115,15 +116,12 @@ class SliceViewer(QWidget):
     # Public API — image loading
     # ------------------------------------------------------------------
 
-    def initialize(self):
-        pass
+    def initialize(self): pass
 
     def set_sitk_image(self, sitk_image) -> None:
-        """Load a SimpleITK image and display the middle slice."""
         import SimpleITK as sitk
-
         arr = sitk.GetArrayFromImage(sitk_image)
-        self._volume = arr.astype(np.float32)
+        self._volume  = arr.astype(np.float32)
         self._spacing = sitk_image.GetSpacing()
         self._origin  = sitk_image.GetOrigin()
 
@@ -144,18 +142,14 @@ class SliceViewer(QWidget):
         self._update_slice_label()
         self._update_display()
 
-    def set_volume(self, vtk_image_data):
-        """VTK path — unused without VTK."""
-        pass
+    def set_volume(self, vtk_image_data): pass
 
     def set_window_level(self, window: float, level: float) -> None:
         self._window = window
         self._level  = level
         self._update_display()
 
-    def set_slice_position(
-        self, world_x: float, world_y: float, world_z: float
-    ) -> None:
+    def set_slice_position(self, world_x: float, world_y: float, world_z: float) -> None:
         if self._volume is None:
             return
         ox, oy, oz = self._origin
@@ -175,10 +169,8 @@ class SliceViewer(QWidget):
         self._update_slice_label()
         self._update_display()
 
-    def set_crosshair(self, world_x: float, world_y: float, world_z: float) -> None:
-        pass
-
-    def render(self):       pass
+    def set_crosshair(self, world_x, world_y, world_z): pass
+    def render(self): pass
     def get_renderer(self): return None
     def get_interactor(self): return None
 
@@ -187,7 +179,6 @@ class SliceViewer(QWidget):
     # ------------------------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
-        """Set interaction mode: "entry", "target", "landmark", or "" for none."""
         self._mode = mode
         if mode:
             self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
@@ -196,16 +187,14 @@ class SliceViewer(QWidget):
 
     def set_trajectory_points(
         self,
-        entry_xyz:  Optional[np.ndarray],
+        entry_xyz: Optional[np.ndarray],
         target_xyz: Optional[np.ndarray],
     ) -> None:
-        """Update entry/target world coordinates and redraw."""
         self._entry_xyz  = entry_xyz
         self._target_xyz = target_xyz
         self._update_display()
 
     def set_landmarks(self, landmark_list: list) -> None:
-        """Update landmark world coordinates (list of np.ndarray)."""
         self._landmark_xyzs = list(landmark_list)
         self._update_display()
 
@@ -225,9 +214,7 @@ class SliceViewer(QWidget):
             return
         img_col, img_row = result
         world = self._image_to_world(img_col, img_row)
-        self.point_placed.emit(
-            self._mode, float(world[0]), float(world[1]), float(world[2])
-        )
+        self.point_placed.emit(self._mode, float(world[0]), float(world[1]), float(world[2]))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -251,10 +238,7 @@ class SliceViewer(QWidget):
 
     def _update_slice_label(self) -> None:
         n = self._n_slices()
-        if n == 0:
-            self._slice_lbl.setText("–/–")
-        else:
-            self._slice_lbl.setText(f"{self._slice_idx + 1}/{n}")
+        self._slice_lbl.setText("–/–" if n == 0 else f"{self._slice_idx + 1}/{n}")
 
     def _n_slices(self) -> int:
         if self._volume is None:
@@ -265,7 +249,21 @@ class SliceViewer(QWidget):
         return nx
 
     # ------------------------------------------------------------------
-    # Internal — geometry
+    # Internal — physical spacing helpers
+    # ------------------------------------------------------------------
+
+    def _plane_spacings(self) -> Tuple[float, float]:
+        """Return (row_spacing, col_spacing) in mm for the current plane."""
+        sx, sy, sz = self._spacing
+        if self._plane == "axial":
+            return sy, sx          # rows = Y, cols = X
+        elif self._plane == "coronal":
+            return sz, sx          # rows = Z, cols = X
+        else:
+            return sz, sy          # rows = Z, cols = Y
+
+    # ------------------------------------------------------------------
+    # Internal — geometry / coordinate mapping
     # ------------------------------------------------------------------
 
     def _get_slice_array(self) -> Optional[np.ndarray]:
@@ -281,70 +279,53 @@ class SliceViewer(QWidget):
             return self._volume[:, :, max(0, min(idx, nx-1))]
 
     def _click_to_image_coords(self, lx: int, ly: int) -> Optional[Tuple[int, int]]:
-        """Label-space click → (img_col, img_row) in the flipped slice."""
-        if self._volume is None:
+        """Label-space click → (img_col, img_row) in the flipped original slice."""
+        scale_x, scale_y, off_x, off_y = self._disp_transform
+        if scale_x <= 0 or scale_y <= 0:
             return None
         arr = self._get_slice_array()
         if arr is None:
             return None
         orig_h, orig_w = arr.shape
-        lbl_w = self._image_label.width()
-        lbl_h = self._image_label.height()
-        if lbl_w <= 0 or lbl_h <= 0 or orig_w <= 0 or orig_h <= 0:
-            return None
 
-        scale = min(lbl_w / orig_w, lbl_h / orig_h)
-        pix_w = orig_w * scale
-        pix_h = orig_h * scale
-        off_x = (lbl_w - pix_w) / 2.0
-        off_y = (lbl_h - pix_h) / 2.0
-
+        # Convert label click → display-pixmap click (remove centering offset)
         px = lx - off_x
         py = ly - off_y
-        if px < 0 or py < 0 or px >= pix_w or py >= pix_h:
+
+        disp_w = orig_w * scale_x
+        disp_h = orig_h * scale_y
+        if px < 0 or py < 0 or px >= disp_w or py >= disp_h:
             return None
 
-        img_col = max(0, min(int(px / scale), orig_w - 1))
-        img_row = max(0, min(int(py / scale), orig_h - 1))
+        img_col = max(0, min(int(px / scale_x), orig_w - 1))
+        img_row = max(0, min(int(py / scale_y), orig_h - 1))
         return img_col, img_row
 
     def _image_to_world(self, img_col: int, img_row: int) -> np.ndarray:
-        """(img_col, img_row) in flipped-slice space → world (mm)."""
+        """(img_col, img_row) in flipped-slice space → world mm."""
         ox, oy, oz = self._origin
         sx, sy, sz = self._spacing
         nz, ny, nx = self._volume.shape
         idx = self._slice_idx
         if self._plane == "axial":
-            return np.array([
-                ox + img_col * sx,
-                oy + ((ny - 1) - img_row) * sy,
-                oz + idx * sz,
-            ])
+            return np.array([ox + img_col * sx, oy + ((ny-1) - img_row) * sy, oz + idx * sz])
         elif self._plane == "coronal":
-            return np.array([
-                ox + img_col * sx,
-                oy + idx * sy,
-                oz + ((nz - 1) - img_row) * sz,
-            ])
-        else:  # sagittal
-            return np.array([
-                ox + idx * sx,
-                oy + img_col * sy,
-                oz + ((nz - 1) - img_row) * sz,
-            ])
+            return np.array([ox + img_col * sx, oy + idx * sy, oz + ((nz-1) - img_row) * sz])
+        else:
+            return np.array([ox + idx * sx, oy + img_col * sy, oz + ((nz-1) - img_row) * sz])
 
     def _world_to_display(self, world_xyz) -> Tuple[float, float]:
-        """World (mm) → (img_col, img_row) in the flipped slice image."""
+        """World mm → (img_col, img_row) in the flipped original slice."""
         ox, oy, oz = self._origin
         sx, sy, sz = self._spacing
         nz, ny, nx = self._volume.shape
         wx, wy, wz = float(world_xyz[0]), float(world_xyz[1]), float(world_xyz[2])
         if self._plane == "axial":
-            return (wx - ox) / sx, (ny - 1) - (wy - oy) / sy
+            return (wx - ox) / sx, (ny-1) - (wy - oy) / sy
         elif self._plane == "coronal":
-            return (wx - ox) / sx, (nz - 1) - (wz - oz) / sz
+            return (wx - ox) / sx, (nz-1) - (wz - oz) / sz
         else:
-            return (wy - oy) / sy, (nz - 1) - (wz - oz) / sz
+            return (wy - oy) / sy, (nz-1) - (wz - oz) / sz
 
     # ------------------------------------------------------------------
     # Internal — rendering
@@ -357,11 +338,10 @@ class SliceViewer(QWidget):
 
         arr = np.flipud(arr)
 
-        lo   = self._level - self._window / 2.0
-        hi   = self._level + self._window / 2.0
-        span = max(hi - lo, 1e-6)
+        lo = self._level - self._window / 2.0
+        hi = self._level + self._window / 2.0
         arr_u8 = np.ascontiguousarray(
-            (np.clip(arr, lo, hi) - lo) / span * 255.0, dtype=np.uint8
+            (np.clip(arr, lo, hi) - lo) / max(hi - lo, 1e-6) * 255.0, dtype=np.uint8
         )
         orig_h, orig_w = arr_u8.shape
 
@@ -370,21 +350,55 @@ class SliceViewer(QWidget):
         pix = QPixmap.fromImage(qimg)
 
         label_sz = self._image_label.size()
-        if label_sz.width() > 0 and label_sz.height() > 0:
-            scale = min(label_sz.width() / orig_w, label_sz.height() / orig_h)
+        if label_sz.width() <= 0 or label_sz.height() <= 0:
+            self._image_label.setPixmap(pix)
+            return
+
+        # --- Physical aspect ratio correction ---
+        # Each plane's rows and cols have different spacings in mm.
+        # Scale the image to physical dimensions before fitting to the label,
+        # so e.g. a coronal slice with 3mm Z voxels looks correct.
+        row_sp, col_sp = self._plane_spacings()
+        min_sp = min(row_sp, col_sp)
+        phys_w = max(1, int(round(orig_w * col_sp / min_sp)))
+        phys_h = max(1, int(round(orig_h * row_sp / min_sp)))
+
+        if phys_w != orig_w or phys_h != orig_h:
             pix = pix.scaled(
-                label_sz,
-                Qt.AspectRatioMode.KeepAspectRatio,
+                phys_w, phys_h,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            self._paint_markers(pix, scale, orig_h, orig_w)
 
+        # --- Fit to label (keep physical aspect ratio) ---
+        pix = pix.scaled(
+            label_sz,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        # Effective scale from *original image pixels* to *display pixels*
+        scale_to_label = min(label_sz.width() / phys_w, label_sz.height() / phys_h)
+        scale_x = (col_sp / min_sp) * scale_to_label   # orig col → display x
+        scale_y = (row_sp / min_sp) * scale_to_label   # orig row → display y
+
+        # Centering offset (label is bigger than the pixmap in one dimension)
+        off_x = (label_sz.width()  - pix.width())  / 2.0
+        off_y = (label_sz.height() - pix.height()) / 2.0
+
+        self._disp_transform = (scale_x, scale_y, off_x, off_y)
+
+        self._paint_markers(pix, scale_x, scale_y, orig_h, orig_w)
         self._image_label.setPixmap(pix)
 
     def _paint_markers(
-        self, pix: QPixmap, scale: float, orig_h: int, orig_w: int
+        self,
+        pix: QPixmap,
+        scale_x: float,
+        scale_y: float,
+        orig_h: int,
+        orig_w: int,
     ) -> None:
-        """Draw entry/target/landmark markers on *pix* (already scaled)."""
         markers = [
             (self._entry_xyz,  _ENTRY_COLOR),
             (self._target_xyz, _TARGET_COLOR),
@@ -392,11 +406,13 @@ class SliceViewer(QWidget):
         for xyz in self._landmark_xyzs:
             markers.append((xyz, _LM_COLOR))
 
-        any_visible = False
-        plotted: list = []   # (px, py) for trajectory line
+        if all(xyz is None for xyz, _ in markers) and not self._landmark_xyzs:
+            return
 
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        entry_disp = target_disp = None
 
         for world_xyz, color in markers:
             if world_xyz is None:
@@ -404,36 +420,28 @@ class SliceViewer(QWidget):
             ic, ir = self._world_to_display(world_xyz)
             if ic < 0 or ir < 0 or ic >= orig_w or ir >= orig_h:
                 continue
-            px, py = ic * scale, ir * scale
-            any_visible = True
-            plotted.append((px, py))
+            px, py = ic * scale_x, ir * scale_y
 
-            r   = 7
-            arm = 12
+            if world_xyz is self._entry_xyz:
+                entry_disp = (px, py)
+            elif world_xyz is self._target_xyz:
+                target_disp = (px, py)
+
+            r, arm = 7, 12
             pen = QPen(color, 1.5)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QPointF(px, py), r, r)
-            # Crosshair arms outside the circle
             painter.drawLine(QPointF(px - arm, py), QPointF(px - r - 1, py))
-            painter.drawLine(QPointF(px + r + 1, py), QPointF(px + arm, py))
+            painter.drawLine(QPointF(px + r + 1, py), QPointF(px + arm,  py))
             painter.drawLine(QPointF(px, py - arm), QPointF(px, py - r - 1))
             painter.drawLine(QPointF(px, py + r + 1), QPointF(px, py + arm))
 
-        # Trajectory line between entry and target (if both visible)
-        if (self._entry_xyz is not None and self._target_xyz is not None
-                and len(plotted) >= 2):
-            ic_e, ir_e = self._world_to_display(self._entry_xyz)
-            ic_t, ir_t = self._world_to_display(self._target_xyz)
-            e_in = 0 <= ic_e < orig_w and 0 <= ir_e < orig_h
-            t_in = 0 <= ic_t < orig_w and 0 <= ir_t < orig_h
-            if e_in and t_in:
-                dash_pen = QPen(QColor(255, 220, 0), 1)
-                dash_pen.setStyle(Qt.PenStyle.DashLine)
-                painter.setPen(dash_pen)
-                painter.drawLine(
-                    QPointF(ic_e * scale, ir_e * scale),
-                    QPointF(ic_t * scale, ir_t * scale),
-                )
+        # Trajectory line between entry and target
+        if entry_disp and target_disp:
+            dash = QPen(QColor(255, 220, 0), 1)
+            dash.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(dash)
+            painter.drawLine(QPointF(*entry_disp), QPointF(*target_disp))
 
         painter.end()
