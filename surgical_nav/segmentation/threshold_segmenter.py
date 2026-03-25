@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Tuple
 import time
 
+import numpy as np
 import SimpleITK as sitk
 
 
@@ -199,6 +200,89 @@ class ThresholdSegmenter:
         self._log(
             "segment_target: "
             f"seed={seed_value:.1f} bounds=({adaptive_lower:.1f}, {adaptive_upper:.1f}) "
+            f"took {time.perf_counter() - t0:.2f}s"
+        )
+        return sitk.Cast(binary, sitk.sitkUInt8)
+
+    def segment_from_seeds(
+        self,
+        image: sitk.Image,
+        inside_seed_mask: np.ndarray,
+        outside_seed_mask: np.ndarray,
+        smooth_sigma: float = 1.0,
+    ) -> sitk.Image:
+        """Segment a target from inside/outside seed masks.
+
+        This follows the SlicerOpenNav interaction model more closely:
+        the user paints foreground and background hints, then the target
+        is interpolated between them.
+        """
+        t0 = time.perf_counter()
+        inside_count = int(np.count_nonzero(inside_seed_mask))
+        outside_count = int(np.count_nonzero(outside_seed_mask))
+
+        result = sitk.Image(image.GetSize(), sitk.sitkUInt8)
+        result.CopyInformation(image)
+        if inside_count == 0:
+            return result
+
+        inside = sitk.GetImageFromArray(inside_seed_mask.astype(np.uint8, copy=False))
+        inside.CopyInformation(image)
+        outside = sitk.GetImageFromArray(outside_seed_mask.astype(np.uint8, copy=False))
+        outside.CopyInformation(image)
+
+        inside = sitk.BinaryDilate(inside, [1, 1, 1], sitk.sitkBall)
+        if outside_count > 0:
+            outside = sitk.BinaryDilate(outside, [1, 1, 1], sitk.sitkBall)
+
+        smoothed = sitk.DiscreteGaussian(image, variance=float(smooth_sigma) ** 2)
+        gradient = sitk.GradientMagnitudeRecursiveGaussian(
+            smoothed,
+            sigma=max(0.5, float(smooth_sigma)),
+        )
+
+        markers = sitk.Image(image.GetSize(), sitk.sitkUInt32)
+        markers.CopyInformation(image)
+        markers = sitk.Cast(inside, sitk.sitkUInt32)
+
+        if outside_count > 0:
+            markers = markers + 2 * sitk.Cast(outside, sitk.sitkUInt32)
+        else:
+            # If the user did not paint an outside region yet, use the border
+            # as a weak background prior so the interpolation still has a stop.
+            border = sitk.Image(image.GetSize(), sitk.sitkUInt8)
+            border.CopyInformation(image)
+            size = image.GetSize()
+            for z in (0, size[2] - 1):
+                for y in range(size[1]):
+                    for x in range(size[0]):
+                        border.SetPixel(x, y, z, 1)
+            for z in range(size[2]):
+                for y in (0, size[1] - 1):
+                    for x in range(size[0]):
+                        border.SetPixel(x, y, z, 1)
+            for z in range(size[2]):
+                for y in range(size[1]):
+                    for x in (0, size[0] - 1):
+                        border.SetPixel(x, y, z, 1)
+            markers = markers + 2 * sitk.Cast(border, sitk.sitkUInt32)
+
+        watershed = sitk.MorphologicalWatershedFromMarkers(
+            gradient,
+            markers,
+            markWatershedLine=False,
+            fullyConnected=False,
+        )
+        binary = sitk.Equal(watershed, 1)
+        binary = sitk.BinaryMorphologicalClosing(
+            sitk.Cast(binary, sitk.sitkUInt8),
+            [1, 1, 1],
+            sitk.sitkBall,
+        )
+        binary = self._keep_largest_component(binary)
+        self._log(
+            "segment_from_seeds: "
+            f"inside={inside_count:,} outside={outside_count:,} "
             f"took {time.perf_counter() - t0:.2f}s"
         )
         return sitk.Cast(binary, sitk.sitkUInt8)

@@ -123,7 +123,8 @@ class _SlicePane(QWidget):
         self._title = title
         self._volume_array: np.ndarray | None = None
         self._overlay_array: np.ndarray | None = None
-        self._preview_overlay_array: np.ndarray | None = None
+        self._seed_overlay_array: np.ndarray | None = None
+        self._target_preview_array: np.ndarray | None = None
         self._axis = 0
         self._image_shape: tuple[int, int] | None = None
         self._markers: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
@@ -216,8 +217,13 @@ class _SlicePane(QWidget):
         if self._volume_array is not None:
             self._render_slice(self._slider.value())
 
-    def set_preview_overlay(self, overlay_array: np.ndarray | None):
-        self._preview_overlay_array = overlay_array
+    def set_seed_overlay(self, overlay_array: np.ndarray | None):
+        self._seed_overlay_array = overlay_array
+        if self._volume_array is not None:
+            self._render_slice(self._slider.value())
+
+    def set_target_preview(self, overlay_array: np.ndarray | None):
+        self._target_preview_array = overlay_array
         if self._volume_array is not None:
             self._render_slice(self._slider.value())
 
@@ -259,11 +265,18 @@ class _SlicePane(QWidget):
             if overlay_slice is not None:
                 mask = overlay_slice > 0
                 rgb[mask] = (0.45 * rgb[mask] + 0.55 * np.array([64, 220, 96])).astype(np.uint8)
-        if self._preview_overlay_array is not None:
-            preview_slice = self._extract_preview_overlay(index)
+        if self._seed_overlay_array is not None:
+            seed_slice = self._extract_seed_overlay(index)
+            if seed_slice is not None:
+                inside_mask = seed_slice == 1
+                outside_mask = seed_slice == 2
+                rgb[inside_mask] = (0.30 * rgb[inside_mask] + 0.70 * np.array([64, 255, 64])).astype(np.uint8)
+                rgb[outside_mask] = (0.30 * rgb[outside_mask] + 0.70 * np.array([255, 64, 64])).astype(np.uint8)
+        if self._target_preview_array is not None:
+            preview_slice = self._extract_target_preview(index)
             if preview_slice is not None:
                 mask = preview_slice > 0
-                rgb[mask] = (0.35 * rgb[mask] + 0.65 * np.array([255, 64, 64])).astype(np.uint8)
+                rgb[mask] = (0.35 * rgb[mask] + 0.65 * np.array([255, 210, 64])).astype(np.uint8)
         self._draw_outline(rgb, index)
         self._draw_trajectory(rgb)
         self._draw_markers(rgb, index)
@@ -340,14 +353,23 @@ class _SlicePane(QWidget):
             return self._overlay_array[:, index, :]
         return self._overlay_array[:, :, index]
 
-    def _extract_preview_overlay(self, index: int):
-        if self._preview_overlay_array is None:
+    def _extract_seed_overlay(self, index: int):
+        if self._seed_overlay_array is None:
             return None
         if self._axis == 0:
-            return self._preview_overlay_array[index, :, :]
+            return self._seed_overlay_array[index, :, :]
         if self._axis == 1:
-            return self._preview_overlay_array[:, index, :]
-        return self._preview_overlay_array[:, :, index]
+            return self._seed_overlay_array[:, index, :]
+        return self._seed_overlay_array[:, :, index]
+
+    def _extract_target_preview(self, index: int):
+        if self._target_preview_array is None:
+            return None
+        if self._axis == 0:
+            return self._target_preview_array[index, :, :]
+        if self._axis == 1:
+            return self._target_preview_array[:, index, :]
+        return self._target_preview_array[:, :, index]
 
     def _draw_markers(self, rgb: np.ndarray, index: int):
         for ijk, color in self._markers:
@@ -669,7 +691,8 @@ class QtSlicePreview(QWidget):
         self._volume_array: np.ndarray | None = None
         self._sitk_image: sitk.Image | None = None
         self._target_overlay: np.ndarray | None = None
-        self._paint_preview_overlay: np.ndarray | None = None
+        self._seed_overlay: np.ndarray | None = None
+        self._target_preview_overlay: np.ndarray | None = None
         self._landmark_markers: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
         self._trajectory_markers: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
 
@@ -705,6 +728,8 @@ class QtSlicePreview(QWidget):
         self._coronal.set_volume(self._volume_array, axis=1)
         self._sagittal.set_volume(self._volume_array, axis=2)
         self._target_overlay = None
+        self._seed_overlay = None
+        self._target_preview_overlay = None
         self._landmark_markers = []
         self._trajectory_markers = []
         self._refresh_annotations()
@@ -722,13 +747,22 @@ class QtSlicePreview(QWidget):
             self._target_overlay = sitk.GetArrayViewFromImage(label_image)
         self._refresh_annotations()
 
-    def set_paint_preview(self, label_image):
+    def set_seed_label(self, label_image):
         if label_image is None:
-            self._paint_preview_overlay = None
+            self._seed_overlay = None
         elif isinstance(label_image, np.ndarray):
-            self._paint_preview_overlay = label_image
+            self._seed_overlay = label_image
         else:
-            self._paint_preview_overlay = sitk.GetArrayViewFromImage(label_image)
+            self._seed_overlay = sitk.GetArrayViewFromImage(label_image)
+        self._refresh_annotations()
+
+    def set_target_preview(self, label_image):
+        if label_image is None:
+            self._target_preview_overlay = None
+        elif isinstance(label_image, np.ndarray):
+            self._target_preview_overlay = label_image
+        else:
+            self._target_preview_overlay = sitk.GetArrayViewFromImage(label_image)
         self._refresh_annotations()
 
     def set_landmarks(self, ras_points):
@@ -781,5 +815,6 @@ class QtSlicePreview(QWidget):
         markers = self._landmark_markers + self._trajectory_markers
         for pane in (self._axial, self._coronal, self._sagittal):
             pane.set_overlay(self._target_overlay)
-            pane.set_preview_overlay(self._paint_preview_overlay)
+            pane.set_seed_overlay(self._seed_overlay)
+            pane.set_target_preview(self._target_preview_overlay)
             pane.set_markers(markers)
