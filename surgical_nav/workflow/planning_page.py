@@ -77,6 +77,9 @@ class PlanningPage(WorkflowPage):
     # Arguments: entry_xyz (np.ndarray or None), target_xyz (np.ndarray or None)
     trajectory_points_updated = Signal(object, object)
 
+    # Emitted whenever the landmark list changes (list of np.ndarray world coords)
+    landmarks_updated = Signal(list)
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__("Planning", parent, show_back=True)
         self._step = 1          # current active step (1–4)
@@ -375,11 +378,16 @@ class PlanningPage(WorkflowPage):
         layout.addWidget(self._place_lm_btn)
 
         self._lm_table = QTableWidget(0, 2)
-        self._lm_table.setHorizontalHeaderLabels(["#", "Position (RAS)"])
+        self._lm_table.setHorizontalHeaderLabels(["Name", "Position (RAS)"])
         self._lm_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
-        self._lm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._lm_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        # Allow double-click editing; Position column items will be flagged non-editable
+        self._lm_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)
+        self._lm_table.itemChanged.connect(self._on_landmark_name_changed)
         layout.addWidget(self._lm_table)
 
         row = QHBoxLayout()
@@ -425,19 +433,37 @@ class PlanningPage(WorkflowPage):
     def _refresh_landmark_table(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")
         points = node.points if node else []
+        self._lm_table.blockSignals(True)
         self._lm_table.setRowCount(len(points))
         for i, p in enumerate(points):
             pos = p["position"]
-            self._lm_table.setItem(i, 0, QTableWidgetItem(p["label"]))
-            self._lm_table.setItem(
-                i, 1,
-                QTableWidgetItem(f"({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
-            )
+
+            name_item = QTableWidgetItem(p["label"])
+            self._lm_table.setItem(i, 0, name_item)
+
+            pos_item = QTableWidgetItem(f"({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+            pos_item.setFlags(pos_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._lm_table.setItem(i, 1, pos_item)
+        self._lm_table.blockSignals(False)
+
         n = len(points)
         self._lm_status.setText(
             f"{n} landmark{'s' if n != 1 else ''} placed"
             + (" — ready" if n >= 3 else f" (need ≥3)")
         )
+        self.landmarks_updated.emit([p["position"] for p in points])
+
+    def _on_landmark_name_changed(self, item: QTableWidgetItem):
+        if item.column() != 0:
+            return
+        new_name = item.text().strip()
+        if not new_name:
+            return
+        node = self._scene_graph.get_node("PLANNING_LANDMARKS")
+        row = item.row()
+        if node and row < len(node.points):
+            node.points[row]["label"] = new_name
+            self._scene_graph._fire("node_modified", node)
 
     def _complete_planning(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")

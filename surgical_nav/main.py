@@ -110,6 +110,11 @@ def main():
         lambda entry, target: [v.set_trajectory_points(entry, target) for v in _slice_viewers]
     )
 
+    # Update landmark markers on all slice viewers when landmarks change
+    planning_page.landmarks_updated.connect(
+        lambda lms: [v.set_landmarks(lms) for v in _slice_viewers]
+    )
+
     planning_page.go_back.connect(lambda: window.set_page(0))
     window.add_page(planning_page)   # index 1
 
