@@ -69,10 +69,22 @@ class PlanningPage(WorkflowPage):
     skin_mesh_ready   = Signal(object)   # vtkPolyData
     target_mesh_ready = Signal(object)   # vtkPolyData
 
+    # Emitted when the user activates/deactivates a point-placement mode.
+    # Value: "entry" | "target" | "landmark" | "" (none)
+    interaction_mode_changed = Signal(str)
+
+    # Emitted after entry/target points change so slice viewers can redraw.
+    # Arguments: entry_xyz (np.ndarray or None), target_xyz (np.ndarray or None)
+    trajectory_points_updated = Signal(object, object)
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__("Planning", parent)
         self._step = 1          # current active step (1–4)
         self._seg_thread: Optional[QThread] = None
+
+        # Trajectory point cache (world coords)
+        self._entry_xyz:  Optional[np.ndarray] = None
+        self._target_xyz: Optional[np.ndarray] = None
 
         # Cached data
         self._sitk_image:   Optional[sitk.Image] = None
@@ -261,12 +273,8 @@ class PlanningPage(WorkflowPage):
         self._target_btn = QPushButton("Set Target Point")
         self._entry_btn.setCheckable(True)
         self._target_btn.setCheckable(True)
-        self._entry_btn.clicked.connect(
-            lambda: self._target_btn.setChecked(False)
-        )
-        self._target_btn.clicked.connect(
-            lambda: self._entry_btn.setChecked(False)
-        )
+        self._entry_btn.toggled.connect(self._on_entry_btn_toggled)
+        self._target_btn.toggled.connect(self._on_target_btn_toggled)
         layout.addWidget(self._entry_btn)
         layout.addWidget(self._target_btn)
 
@@ -278,6 +286,20 @@ class PlanningPage(WorkflowPage):
         next_btn.clicked.connect(lambda: self._go_to_step(4))
         layout.addWidget(next_btn)
         return box
+
+    def _on_entry_btn_toggled(self, checked: bool):
+        if checked:
+            self._target_btn.setChecked(False)
+            self.interaction_mode_changed.emit("entry")
+        else:
+            self.interaction_mode_changed.emit("")
+
+    def _on_target_btn_toggled(self, checked: bool):
+        if checked:
+            self._entry_btn.setChecked(False)
+            self.interaction_mode_changed.emit("target")
+        else:
+            self.interaction_mode_changed.emit("")
 
     def place_trajectory_point(self, point_type: str, world_xyz: np.ndarray):
         """Called externally when user clicks on a slice view in trajectory mode.
@@ -299,6 +321,13 @@ class PlanningPage(WorkflowPage):
         node = self._scene_graph.get_node(node_id)
         node.points = [p for p in node.points if p["label"] != label]
         self._scene_graph.add_fiducial(node_id, label, world_xyz)
+
+        # Cache and broadcast so slice viewers can redraw markers
+        if point_type == "entry":
+            self._entry_xyz = world_xyz.copy()
+        else:
+            self._target_xyz = world_xyz.copy()
+        self.trajectory_points_updated.emit(self._entry_xyz, self._target_xyz)
 
         self._refresh_traj_status()
 
@@ -325,6 +354,9 @@ class PlanningPage(WorkflowPage):
 
         self._place_lm_btn = QPushButton("Place Landmark")
         self._place_lm_btn.setCheckable(True)
+        self._place_lm_btn.toggled.connect(
+            lambda checked: self.interaction_mode_changed.emit("landmark" if checked else "")
+        )
         layout.addWidget(self._place_lm_btn)
 
         self._lm_table = QTableWidget(0, 2)
@@ -404,6 +436,7 @@ class PlanningPage(WorkflowPage):
     def _go_to_step(self, step: int):
         self._step = step
         self._update_step_visibility()
+        self.interaction_mode_changed.emit("")
 
     def _update_step_visibility(self):
         widgets = [self._step1_box, self._step2_box,

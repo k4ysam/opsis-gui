@@ -2,6 +2,7 @@
 
 import sys
 import os
+import numpy as np
 
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -85,6 +86,29 @@ def main():
     planning_page.status_message.connect(window.statusBar().showMessage)
     planning_page.skin_mesh_ready.connect(volume_viewer.add_surface)
     planning_page.target_mesh_ready.connect(volume_viewer.add_surface)
+
+    _slice_viewers = [axial, coronal, sagittal]
+
+    # Propagate interaction mode to all slice viewers
+    planning_page.interaction_mode_changed.connect(
+        lambda mode: [v.set_mode(mode) for v in _slice_viewers]
+    )
+
+    # Propagate placed points from any slice viewer to the planning page
+    def _on_point_placed(mode: str, x: float, y: float, z: float):
+        xyz = np.array([x, y, z])
+        if mode in ("entry", "target"):
+            planning_page.place_trajectory_point(mode, xyz)
+        elif mode == "landmark":
+            planning_page.place_landmark(xyz)
+
+    for _v in _slice_viewers:
+        _v.point_placed.connect(_on_point_placed)
+
+    # Update markers on all slice viewers when trajectory points change
+    planning_page.trajectory_points_updated.connect(
+        lambda entry, target: [v.set_trajectory_points(entry, target) for v in _slice_viewers]
+    )
 
     window.add_page(planning_page)   # index 1
 
