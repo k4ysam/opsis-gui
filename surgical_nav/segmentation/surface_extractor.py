@@ -20,8 +20,14 @@ from __future__ import annotations
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
-from vtkmodules.util.numpy_support import numpy_to_vtk
+try:
+    import vtkmodules.all as vtk
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+    _VTK = True
+except ImportError:
+    vtk = None  # type: ignore
+    numpy_to_vtk = None  # type: ignore
+    _VTK = False
 
 
 class SurfaceExtractor:

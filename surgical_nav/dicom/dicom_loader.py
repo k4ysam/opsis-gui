@@ -18,8 +18,14 @@ from typing import List, Tuple
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
-from vtkmodules.util.numpy_support import numpy_to_vtk
+try:
+    import vtkmodules.all as vtk
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+    _VTK = True
+except ImportError:
+    vtk = None  # type: ignore
+    numpy_to_vtk = None  # type: ignore
+    _VTK = False
 
 
 class DICOMLoader:
@@ -27,7 +33,7 @@ class DICOMLoader:
 
     def load_series(
         self, file_paths: List[str]
-    ) -> Tuple[vtk.vtkImageData, sitk.Image]:
+    ) -> Tuple[object, sitk.Image]:
         """Load *file_paths* as one DICOM series.
 
         Parameters
@@ -65,12 +71,15 @@ class DICOMLoader:
     # ------------------------------------------------------------------
 
     @classmethod
-    def sitk_to_vtk(cls, sitk_image: sitk.Image) -> vtk.vtkImageData:
+    def sitk_to_vtk(cls, sitk_image: sitk.Image):
         """Convert a SimpleITK image (LPS) to vtkImageData (RAS).
 
         The pixel array is the same; only the origin and direction cosines
         are flipped on X and Y (LPS → RAS).
         """
+        if not _VTK:
+            return None
+
         # --- Extract numpy array (z, y, x) → reorder to (x, y, z) for VTK ---
         arr = sitk.GetArrayFromImage(sitk_image)   # shape: (z, y, x)
         arr = arr.astype(np.float32)

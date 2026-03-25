@@ -23,8 +23,14 @@ from typing import Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
-from vtkmodules.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+try:
+    import vtkmodules.all as vtk
+    from vtkmodules.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+    _VTK = True
+except ImportError:
+    vtk = None  # type: ignore
+    vtk_to_numpy = numpy_to_vtk = None  # type: ignore
+    _VTK = False
 
 
 class PaintBrush:

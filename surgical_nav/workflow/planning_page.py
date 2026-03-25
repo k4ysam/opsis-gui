@@ -16,7 +16,12 @@ from typing import Optional, List
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
+try:
+    import vtkmodules.all as vtk
+    _VTK = True
+except ImportError:
+    vtk = None  # type: ignore
+    _VTK = False
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,

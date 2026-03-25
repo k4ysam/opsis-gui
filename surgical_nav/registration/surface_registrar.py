@@ -22,7 +22,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import vtkmodules.all as vtk
+try:
+    import vtkmodules.all as vtk
+    _VTK = True
+except ImportError:
+    vtk = None  # type: ignore
+    _VTK = False
 
 
 # ---------------------------------------------------------------------------
