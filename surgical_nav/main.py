@@ -110,6 +110,7 @@ def main():
         lambda entry, target: [v.set_trajectory_points(entry, target) for v in _slice_viewers]
     )
 
+    planning_page.go_back.connect(lambda: window.set_page(0))
     window.add_page(planning_page)   # index 1
 
     patients_page.stage_complete.connect(
@@ -121,6 +122,7 @@ def main():
     registration_page.stage_complete.connect(lambda: window.mark_stage_complete(2))
     registration_page.stage_complete.connect(lambda: _auto_save(2))
     registration_page.status_message.connect(window.statusBar().showMessage)
+    registration_page.go_back.connect(lambda: window.set_page(1))
     window.add_page(registration_page)   # index 2
 
     planning_page.stage_complete.connect(
@@ -130,6 +132,7 @@ def main():
     # --- Stage 3: Navigation ---
     navigation_page = NavigationPage([axial, coronal, sagittal], volume_viewer)
     navigation_page.status_message.connect(window.statusBar().showMessage)
+    navigation_page.go_back.connect(lambda: window.set_page(2))
     window.add_page(navigation_page)   # index 3
 
     registration_page.stage_complete.connect(
@@ -139,6 +142,7 @@ def main():
     # --- Stage 4: Landmark Manager ---
     landmark_page = LandmarkManagerPage()
     landmark_page.status_message.connect(window.statusBar().showMessage)
+    landmark_page.go_back.connect(lambda: window.set_page(3))
     window.add_page(landmark_page)   # index 4
 
     navigation_page.stage_complete.connect(
