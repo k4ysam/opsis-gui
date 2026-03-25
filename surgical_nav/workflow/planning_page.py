@@ -78,7 +78,7 @@ class PlanningPage(WorkflowPage):
     trajectory_points_updated = Signal(object, object)
 
     def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__("Planning", parent)
+        super().__init__("Planning", parent, show_back=True)
         self._step = 1          # current active step (1–4)
         self._seg_thread: Optional[QThread] = None
 

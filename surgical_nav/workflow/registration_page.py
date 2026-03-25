@@ -48,7 +48,7 @@ class RegistrationPage(WorkflowPage):
     registration_complete = Signal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__("Registration", parent)
+        super().__init__("Registration", parent, show_back=True)
         self._step = 1
 
         # Calibration state
