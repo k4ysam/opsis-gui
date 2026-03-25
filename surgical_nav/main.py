@@ -6,6 +6,13 @@ import os
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Run without VTK for UI-only testing: SURGICAL_NAV_NO_VTK=1 python3 -m surgical_nav.main
+if os.environ.get("SURGICAL_NAV_NO_VTK") == "1":
+    for _m in ["vtkmodules", "vtkmodules.all", "vtkmodules.qt",
+               "vtkmodules.qt.QVTKRenderWindowInteractor",
+               "vtkmodules.util", "vtkmodules.util.numpy_support"]:
+        sys.modules[_m] = None  # type: ignore
+
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from PySide6.QtCore import Qt
 
@@ -61,10 +68,11 @@ def main():
     patients_page = PatientsPage()
 
     def on_volume_loaded(vtk_image, sitk_image, case_name):
-        volume_viewer.set_volume(vtk_image)
-        axial.set_volume(vtk_image)
-        coronal.set_volume(vtk_image)
-        sagittal.set_volume(vtk_image)
+        if vtk_image is not None:
+            volume_viewer.set_volume(vtk_image)
+            axial.set_volume(vtk_image)
+            coronal.set_volume(vtk_image)
+            sagittal.set_volume(vtk_image)
         window.set_case_name(case_name)
         _current_case[0] = case_name
         _current_sitk[0] = sitk_image
