@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 from typing import List, Tuple
+import time
 
 import numpy as np
 import SimpleITK as sitk
@@ -24,6 +25,10 @@ from vtkmodules.util.numpy_support import numpy_to_vtk
 
 class DICOMLoader:
     """Loads a sorted list of DICOM file paths into VTK + SimpleITK objects."""
+
+    @staticmethod
+    def _log(message: str):
+        print(f"[timing] {message}", flush=True)
 
     def load_series(
         self, file_paths: List[str]
@@ -42,8 +47,14 @@ class DICOMLoader:
         sitk_image : SimpleITK.Image
             Original LPS image kept for downstream segmentation.
         """
+        t0 = time.perf_counter()
         sitk_image = self._read_sitk(file_paths)
+        t1 = time.perf_counter()
         vtk_image  = self.sitk_to_vtk(sitk_image)
+        t2 = time.perf_counter()
+        self._log(
+            f"DICOM load: read={t1 - t0:.2f}s vtk_convert={t2 - t1:.2f}s total={t2 - t0:.2f}s"
+        )
         return vtk_image, sitk_image
 
     # ------------------------------------------------------------------
@@ -71,6 +82,7 @@ class DICOMLoader:
         The pixel array is the same; only the origin and direction cosines
         are flipped on X and Y (LPS → RAS).
         """
+        t0 = time.perf_counter()
         # --- Extract numpy array (z, y, x) → reorder to (x, y, z) for VTK ---
         arr = sitk.GetArrayFromImage(sitk_image)   # shape: (z, y, x)
         arr = arr.astype(np.float32)
@@ -107,6 +119,9 @@ class DICOMLoader:
         cos_vtk.SetName("DirectionCosines")
         vtk_image.GetFieldData().AddArray(cos_vtk)
 
+        cls._log(
+            f"sitk_to_vtk dims={nx}x{ny}x{nz} voxels={nx * ny * nz:,} took {time.perf_counter() - t0:.2f}s"
+        )
         return vtk_image
 
     # ------------------------------------------------------------------

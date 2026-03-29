@@ -168,30 +168,6 @@ class MainWindow(QMainWindow):
         elif tool == "HeadFrame":
             self._lbl_head_frame.set_state(color)
 
-    # ------------------------------------------------------------------
-    # Qt overrides
-    # ------------------------------------------------------------------
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Initialise VTK widgets in the workflow stack pages
-        for i in range(self._stack.count()):
-            _initialize_vtk_children(self._stack.widget(i))
-        # Initialise VTK widgets in the right-hand viewer panel
-        viewer_panel = self._splitter.widget(1)
-        if viewer_panel is not None:
-            _initialize_vtk_children(viewer_panel)
-
-
-def _initialize_vtk_children(widget: QWidget):
-    """Recursively call initialize() on any VTKWidget descendants."""
-    from surgical_nav.rendering.vtk_widget import VTKWidget
-    from surgical_nav.rendering.slice_viewer import SliceViewer
-    for child in widget.findChildren(QWidget):
-        if isinstance(child, (VTKWidget, SliceViewer)):
-            child.initialize()
-
-
 class _StatusLight(QWidget):
     """A small coloured circle + label for the status bar."""
 

@@ -40,11 +40,14 @@ class VolumeViewer(QWidget):
         renderer.SetBackground(0.05, 0.05, 0.05)
 
         # Volume rendering pipeline
+        self._empty_image = self._make_empty_image()
         self._volume_mapper = vtk.vtkSmartVolumeMapper()
+        self._volume_mapper.SetInputData(self._empty_image)
         self._volume_property = self._make_ct_bone_property()
         self._volume_actor = vtk.vtkVolume()
         self._volume_actor.SetMapper(self._volume_mapper)
         self._volume_actor.SetProperty(self._volume_property)
+        self._volume_actor.VisibilityOff()
         renderer.AddVolume(self._volume_actor)
 
         # Pointer / needle actor (cylinder by default)
@@ -64,10 +67,12 @@ class VolumeViewer(QWidget):
     def set_volume(self, vtk_image_data: vtk.vtkImageData):
         """Load a vtkImageData into the volume mapper and reset camera."""
         self._volume_mapper.SetInputData(vtk_image_data)
+        self._volume_actor.VisibilityOn()
         self._vtk_widget.reset_camera()
 
     def clear_volume(self):
-        self._volume_mapper.RemoveAllInputs()
+        self._volume_mapper.SetInputData(self._empty_image)
+        self._volume_actor.VisibilityOff()
         self._vtk_widget.render()
 
     # ------------------------------------------------------------------
@@ -229,6 +234,15 @@ class VolumeViewer(QWidget):
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(0.5, 0.5, 0.5)
         return actor
+
+    @staticmethod
+    def _make_empty_image() -> vtk.vtkImageData:
+        """Return a tiny placeholder image so the VTK pipeline stays connected."""
+        image = vtk.vtkImageData()
+        image.SetDimensions(1, 1, 1)
+        image.AllocateScalars(vtk.VTK_SHORT, 1)
+        image.GetPointData().GetScalars().Fill(-1000)
+        return image
 
     def showEvent(self, event):
         super().showEvent(event)
