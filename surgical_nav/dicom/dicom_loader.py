@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+import time
+
 import numpy as np
 import SimpleITK as sitk
 
