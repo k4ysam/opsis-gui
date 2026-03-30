@@ -17,7 +17,6 @@ import time
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -86,10 +85,25 @@ class PlanningPage(WorkflowPage):
     target_outline_updated = Signal(object, object)  # plane, outline points
     interaction_mode_changed = Signal(str)
 
+    # Emitted when the user activates/deactivates a point-placement mode.
+    # Value: "entry" | "target" | "landmark" | "" (none)
+    interaction_mode_changed = Signal(str)
+
+    # Emitted after entry/target points change so slice viewers can redraw.
+    # Arguments: entry_xyz (np.ndarray or None), target_xyz (np.ndarray or None)
+    trajectory_points_updated = Signal(object, object)
+
+    # Emitted whenever the landmark list changes (list of np.ndarray world coords)
+    landmarks_updated = Signal(list)
+
     def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__("Planning", parent)
+        super().__init__("Planning", parent, show_back=True)
         self._step = 1          # current active step (1–4)
         self._seg_thread: Optional[QThread] = None
+
+        # Trajectory point cache (world coords)
+        self._entry_xyz:  Optional[np.ndarray] = None
+        self._target_xyz: Optional[np.ndarray] = None
 
         # Cached data
         self._sitk_image:   Optional[sitk.Image]      = None
@@ -164,9 +178,12 @@ class PlanningPage(WorkflowPage):
         self._seg_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._seg_status)
 
+        nav_row = QHBoxLayout()
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Target Segmentation")
         next_btn.clicked.connect(lambda: self._go_to_step(2))
-        layout.addWidget(next_btn)
+        nav_row.addWidget(next_btn)
+        layout.addLayout(nav_row)
         return box
 
     def _run_skin_segmentation(self):
@@ -192,7 +209,7 @@ class PlanningPage(WorkflowPage):
         self._seg_worker = worker
         thread.start()
 
-    def _on_skin_done(self, label: sitk.Image, mesh: vtk.vtkPolyData):
+    def _on_skin_done(self, label: sitk.Image, mesh):
         if self._seg_thread:
             self._seg_thread.quit()
         self._seg_btn.setEnabled(True)
@@ -206,9 +223,7 @@ class PlanningPage(WorkflowPage):
             opacity=0.6,
         )
         self._scene_graph.add_node(model_node)
-        self._seg_status.setText(
-            f"Skin segmented — {mesh.GetNumberOfPoints():,} points"
-        )
+        self._seg_status.setText("Skin segmented")
         self.skin_mesh_ready.emit(mesh)
 
     def _on_skin_error(self, msg: str):
@@ -274,11 +289,12 @@ class PlanningPage(WorkflowPage):
         layout.addWidget(self._target_status)
 
         nav_row = QHBoxLayout()
-        back_btn = QPushButton("← Back to Skin Segmentation")
+        back_btn = QPushButton("← Back")
         back_btn.clicked.connect(lambda: self._go_to_step(1))
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Trajectory")
         next_btn.clicked.connect(lambda: self._go_to_step(3))
-        nav_row.addWidget(back_btn)
         nav_row.addWidget(next_btn)
         layout.addLayout(nav_row)
         return box
@@ -453,12 +469,8 @@ class PlanningPage(WorkflowPage):
         self._target_btn = QPushButton("Set Target Point")
         self._entry_btn.setCheckable(True)
         self._target_btn.setCheckable(True)
-        self._entry_btn.clicked.connect(
-            lambda: self._target_btn.setChecked(False)
-        )
-        self._target_btn.clicked.connect(
-            lambda: self._entry_btn.setChecked(False)
-        )
+        self._entry_btn.toggled.connect(self._on_entry_btn_toggled)
+        self._target_btn.toggled.connect(self._on_target_btn_toggled)
         layout.addWidget(self._entry_btn)
         layout.addWidget(self._target_btn)
 
@@ -467,14 +479,29 @@ class PlanningPage(WorkflowPage):
         layout.addWidget(self._traj_status)
 
         nav_row = QHBoxLayout()
-        back_btn = QPushButton("← Back to Target Segmentation")
+        back_btn = QPushButton("← Back")
         back_btn.clicked.connect(lambda: self._go_to_step(2))
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
         next_btn = QPushButton("Next → Landmarks")
         next_btn.clicked.connect(lambda: self._go_to_step(4))
-        nav_row.addWidget(back_btn)
         nav_row.addWidget(next_btn)
         layout.addLayout(nav_row)
         return box
+
+    def _on_entry_btn_toggled(self, checked: bool):
+        if checked:
+            self._target_btn.setChecked(False)
+            self.interaction_mode_changed.emit("entry")
+        else:
+            self.interaction_mode_changed.emit("")
+
+    def _on_target_btn_toggled(self, checked: bool):
+        if checked:
+            self._entry_btn.setChecked(False)
+            self.interaction_mode_changed.emit("target")
+        else:
+            self.interaction_mode_changed.emit("")
 
     def place_trajectory_point(self, point_type: str, world_xyz: np.ndarray):
         """Called externally when user clicks on a slice view in trajectory mode.
@@ -496,6 +523,13 @@ class PlanningPage(WorkflowPage):
         node = self._scene_graph.get_node(node_id)
         node.points = [p for p in node.points if p["label"] != label]
         self._scene_graph.add_fiducial(node_id, label, world_xyz)
+
+        # Cache and broadcast so slice viewers can redraw markers
+        if point_type == "entry":
+            self._entry_xyz = world_xyz.copy()
+        else:
+            self._target_xyz = world_xyz.copy()
+        self.trajectory_points_updated.emit(self._entry_xyz, self._target_xyz)
 
         self._refresh_traj_status()
         self.trajectory_updated.emit(
@@ -535,14 +569,22 @@ class PlanningPage(WorkflowPage):
 
         self._place_lm_btn = QPushButton("Place Landmark")
         self._place_lm_btn.setCheckable(True)
+        self._place_lm_btn.toggled.connect(
+            lambda checked: self.interaction_mode_changed.emit("landmark" if checked else "")
+        )
         layout.addWidget(self._place_lm_btn)
 
         self._lm_table = QTableWidget(0, 2)
-        self._lm_table.setHorizontalHeaderLabels(["#", "Position (RAS)"])
+        self._lm_table.setHorizontalHeaderLabels(["Name", "Position (RAS)"])
         self._lm_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
-        self._lm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._lm_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        # Allow double-click editing; Position column items will be flagged non-editable
+        self._lm_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)
+        self._lm_table.itemChanged.connect(self._on_landmark_name_changed)
         layout.addWidget(self._lm_table)
 
         row = QHBoxLayout()
@@ -556,12 +598,13 @@ class PlanningPage(WorkflowPage):
         self._lm_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._lm_status)
 
-        done_btn = QPushButton("Complete Planning")
-        done_btn.clicked.connect(self._complete_planning)
         nav_row = QHBoxLayout()
-        back_btn = QPushButton("← Back to Trajectory")
+        back_btn = QPushButton("← Back")
         back_btn.clicked.connect(lambda: self._go_to_step(3))
         nav_row.addWidget(back_btn)
+        nav_row.addStretch()
+        done_btn = QPushButton("Complete Planning")
+        done_btn.clicked.connect(self._complete_planning)
         nav_row.addWidget(done_btn)
         layout.addLayout(nav_row)
         return box
@@ -589,19 +632,37 @@ class PlanningPage(WorkflowPage):
     def _refresh_landmark_table(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")
         points = node.points if node else []
+        self._lm_table.blockSignals(True)
         self._lm_table.setRowCount(len(points))
         for i, p in enumerate(points):
             pos = p["position"]
-            self._lm_table.setItem(i, 0, QTableWidgetItem(p["label"]))
-            self._lm_table.setItem(
-                i, 1,
-                QTableWidgetItem(f"({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
-            )
+
+            name_item = QTableWidgetItem(p["label"])
+            self._lm_table.setItem(i, 0, name_item)
+
+            pos_item = QTableWidgetItem(f"({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+            pos_item.setFlags(pos_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._lm_table.setItem(i, 1, pos_item)
+        self._lm_table.blockSignals(False)
+
         n = len(points)
         self._lm_status.setText(
             f"{n} landmark{'s' if n != 1 else ''} placed"
             + (" — ready" if n >= 3 else f" (need ≥3)")
         )
+        self.landmarks_updated.emit([p["position"] for p in points])
+
+    def _on_landmark_name_changed(self, item: QTableWidgetItem):
+        if item.column() != 0:
+            return
+        new_name = item.text().strip()
+        if not new_name:
+            return
+        node = self._scene_graph.get_node("PLANNING_LANDMARKS")
+        row = item.row()
+        if node and row < len(node.points):
+            node.points[row]["label"] = new_name
+            self._scene_graph._fire("node_modified", node)
 
     def _current_landmark_positions(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")

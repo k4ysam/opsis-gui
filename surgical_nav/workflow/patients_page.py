@@ -166,6 +166,7 @@ class PatientsPage(WorkflowPage):
         self._selected_series = None
         self._update_load_btn()
 
+        self._progress.setMaximum(100)
         self._progress.setValue(0)
         self._progress.setVisible(True)
         self._status_lbl.setText("Scanning…")
@@ -235,6 +236,8 @@ class PatientsPage(WorkflowPage):
 
         self._load_btn.setEnabled(False)
         self._status_lbl.setText("Loading volume…")
+        self._progress.setMaximum(0)   # indeterminate / marquee
+        self._progress.setVisible(True)
 
         worker = _LoadWorker(self._selected_series.file_paths)
         thread = QThread(self)
@@ -251,6 +254,7 @@ class PatientsPage(WorkflowPage):
     def _on_load_finished(self, vtk_image, sitk_image, case_name: str):
         if self._load_thread is not None:
             self._load_thread.quit()
+        self._progress.setVisible(False)
         self._load_btn.setEnabled(True)
 
         # Push to scene graph
@@ -269,6 +273,7 @@ class PatientsPage(WorkflowPage):
     def _on_load_error(self, msg: str):
         if self._load_thread is not None:
             self._load_thread.quit()
+        self._progress.setVisible(False)
         self._load_btn.setEnabled(True)
         self._status_lbl.setText(f"Load error: {msg}")
         QMessageBox.critical(self, "Load Error", msg)

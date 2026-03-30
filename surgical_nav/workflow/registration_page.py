@@ -48,7 +48,7 @@ class RegistrationPage(WorkflowPage):
     registration_complete = Signal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__("Registration", parent)
+        super().__init__("Registration", parent, show_back=True)
         self._step = 1
 
         # Calibration state
@@ -410,23 +410,11 @@ class RegistrationPage(WorkflowPage):
                                 "Collect at least 10 surface points.")
             return
 
-        # Build source polydata from collected surface points
-        import vtkmodules.all as vtk
-        pts = vtk.vtkPoints()
-        cells = vtk.vtkCellArray()
-        for p in self._surface_points:
-            pid = pts.InsertNextPoint(p.tolist())
-            cells.InsertNextCell(1)
-            cells.InsertCellPoint(pid)
-        source = vtk.vtkPolyData()
-        source.SetPoints(pts)
-        source.SetVerts(cells)
-
         init_node = self._scene_graph.get_node("IMAGE_REGISTRATION")
         init_T = init_node.matrix if init_node is not None else None
 
         reg = SurfaceRegistrar(max_mean_distance_mm=3.0)
-        result = reg.register(source, skin_node.vtk_poly_data, init_T)
+        result = reg.register(None, skin_node.vtk_poly_data, init_T)
 
         if not result.success:
             self._icp_result_lbl.setText(f"Failed: {result.message}")

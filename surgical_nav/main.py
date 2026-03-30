@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+import numpy as np
 
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -168,6 +169,35 @@ def main():
     planning_page.trajectory_updated.connect(preview_viewer.set_trajectory_points)
     planning_page.landmarks_updated.connect(preview_viewer.set_landmarks)
 
+    _slice_viewers = [axial, coronal, sagittal]
+
+    # Propagate interaction mode to all slice viewers
+    planning_page.interaction_mode_changed.connect(
+        lambda mode: [v.set_mode(mode) for v in _slice_viewers]
+    )
+
+    # Propagate placed points from any slice viewer to the planning page
+    def _on_point_placed(mode: str, x: float, y: float, z: float):
+        xyz = np.array([x, y, z])
+        if mode in ("entry", "target"):
+            planning_page.place_trajectory_point(mode, xyz)
+        elif mode == "landmark":
+            planning_page.place_landmark(xyz)
+
+    for _v in _slice_viewers:
+        _v.point_placed.connect(_on_point_placed)
+
+    # Update markers on all slice viewers when trajectory points change
+    planning_page.trajectory_points_updated.connect(
+        lambda entry, target: [v.set_trajectory_points(entry, target) for v in _slice_viewers]
+    )
+
+    # Update landmark markers on all slice viewers when landmarks change
+    planning_page.landmarks_updated.connect(
+        lambda lms: [v.set_landmarks(lms) for v in _slice_viewers]
+    )
+
+    planning_page.go_back.connect(lambda: window.set_page(0))
     window.add_page(planning_page)   # index 1
 
     patients_page.stage_complete.connect(
@@ -179,6 +209,7 @@ def main():
     registration_page.stage_complete.connect(lambda: window.mark_stage_complete(2))
     registration_page.stage_complete.connect(lambda: _auto_save(2))
     registration_page.status_message.connect(window.statusBar().showMessage)
+    registration_page.go_back.connect(lambda: window.set_page(1))
     window.add_page(registration_page)   # index 2
 
     planning_page.stage_complete.connect(
@@ -188,6 +219,7 @@ def main():
     # --- Stage 3: Navigation ---
     navigation_page = NavigationPage([axial, coronal, sagittal], volume_viewer)
     navigation_page.status_message.connect(window.statusBar().showMessage)
+    navigation_page.go_back.connect(lambda: window.set_page(2))
     window.add_page(navigation_page)   # index 3
 
     registration_page.stage_complete.connect(
@@ -197,6 +229,7 @@ def main():
     # --- Stage 4: Landmark Manager ---
     landmark_page = LandmarkManagerPage()
     landmark_page.status_message.connect(window.statusBar().showMessage)
+    landmark_page.go_back.connect(lambda: window.set_page(3))
     window.add_page(landmark_page)   # index 4
 
     navigation_page.stage_complete.connect(

@@ -1,15 +1,18 @@
-"""DICOMLoader: loads a DICOM series into a vtkImageData (RAS coordinates).
+"""DICOMLoader: loads a DICOM series into a SimpleITK image.
 
-SimpleITK reads the series and returns an LPS image.  We convert to RAS by
-negating the X and Y components of origin and direction cosines before
-constructing the vtkImageData.
+Without VTK, ``sitk_to_vtk`` always returns None. The SimpleITK image is
+still loaded and returned for downstream segmentation use.
+
+Tries SimpleITK's ImageSeriesReader first; falls back to pydicom pixel-by-pixel
+reading when SimpleITK cannot determine the ImageIO reader (e.g. compressed or
+non-standard DICOM files).
 
 Usage::
 
     loader = DICOMLoader()
     vtk_image, sitk_image = loader.load_series(file_paths)
-    # vtk_image: vtkImageData in RAS, ready for rendering
-    # sitk_image: original SimpleITK.Image (kept for segmentation)
+    # vtk_image: None (VTK not available)
+    # sitk_image: SimpleITK.Image for segmentation
 """
 
 from __future__ import annotations
@@ -19,12 +22,10 @@ import time
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
-from vtkmodules.util.numpy_support import numpy_to_vtk
 
 
 class DICOMLoader:
-    """Loads a sorted list of DICOM file paths into VTK + SimpleITK objects."""
+    """Loads a sorted list of DICOM file paths into a SimpleITK image."""
 
     @staticmethod
     def _log(message: str):
@@ -32,20 +33,15 @@ class DICOMLoader:
 
     def load_series(
         self, file_paths: List[str]
-    ) -> Tuple[vtk.vtkImageData, sitk.Image]:
+    ) -> Tuple[None, sitk.Image]:
         """Load *file_paths* as one DICOM series.
-
-        Parameters
-        ----------
-        file_paths : list of str
-            Sorted (by InstanceNumber) paths to the DICOM slices.
 
         Returns
         -------
-        vtk_image : vtkImageData
-            Volume in RAS coordinate space, scalar type float32.
+        vtk_image : None
+            VTK image data unavailable without VTK.
         sitk_image : SimpleITK.Image
-            Original LPS image kept for downstream segmentation.
+            Original LPS image for downstream segmentation.
         """
         t0 = time.perf_counter()
         sitk_image = self._read_sitk(file_paths)
@@ -63,17 +59,106 @@ class DICOMLoader:
 
     @staticmethod
     def _read_sitk(file_paths: List[str]) -> sitk.Image:
-        """Read a series from an explicit sorted file list."""
-        reader = sitk.ImageSeriesReader()
-        reader.SetFileNames(file_paths)
-        reader.MetaDataDictionaryArrayUpdateOn()
-        reader.LoadPrivateTagsOn()
-        image = reader.Execute()
-        return sitk.Cast(image, sitk.sitkFloat32)
+        """Read a series from an explicit sorted file list.
 
-    # ------------------------------------------------------------------
-    # SimpleITK → vtkImageData (LPS → RAS conversion)
-    # ------------------------------------------------------------------
+        Tries SimpleITK's ImageSeriesReader first; falls back to pydicom when
+        SimpleITK cannot determine the ImageIO reader.
+        """
+        try:
+            reader = sitk.ImageSeriesReader()
+            reader.SetFileNames(file_paths)
+            reader.MetaDataDictionaryArrayUpdateOn()
+            reader.LoadPrivateTagsOn()
+            image = reader.Execute()
+            return sitk.Cast(image, sitk.sitkFloat32)
+        except Exception as sitk_err:
+            # Fallback: read pixel data with pydicom slice-by-slice
+            try:
+                return DICOMLoader._read_pydicom(file_paths)
+            except Exception as pydicom_err:
+                raise RuntimeError(
+                    f"Could not load DICOM series.\n"
+                    f"SimpleITK error: {sitk_err}\n"
+                    f"pydicom fallback error: {pydicom_err}\n\n"
+                    f"The files may be in an unsupported or compressed format."
+                ) from sitk_err
+
+    @staticmethod
+    def _read_pydicom(file_paths: List[str]) -> sitk.Image:
+        """Read pixel data slice-by-slice with pydicom and assemble into sitk.Image."""
+        import pydicom
+
+        slices = []
+        for path in file_paths:
+            try:
+                ds = pydicom.dcmread(path, force=True)
+            except Exception:
+                continue
+            if not hasattr(ds, "PixelData"):
+                continue
+            slices.append(ds)
+
+        if not slices:
+            raise ValueError(
+                "No DICOM files with pixel data found. "
+                "The selected series may contain metadata-only files "
+                "(e.g. DICOMDIR records) or use an unsupported transfer syntax."
+            )
+
+        # Sort by InstanceNumber
+        slices.sort(key=lambda ds: int(getattr(ds, "InstanceNumber", 0) or 0))
+
+        # Stack pixel arrays: result shape (nz, ny, nx)
+        pixel_arrays = []
+        for ds in slices:
+            try:
+                arr = ds.pixel_array.astype(np.float32)
+            except Exception:
+                continue
+            # Apply rescale slope/intercept if present (converts to HU)
+            slope = float(getattr(ds, "RescaleSlope", 1) or 1)
+            intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
+            arr = arr * slope + intercept
+            pixel_arrays.append(arr)
+
+        if not pixel_arrays:
+            raise ValueError(
+                "Could not decode pixel data from any slice. "
+                "The files may use a compressed transfer syntax that requires "
+                "additional packages (e.g. pylibjpeg, pillow)."
+            )
+        volume = np.stack(pixel_arrays, axis=0).astype(np.float32)  # (nz, ny, nx)
+
+        img = sitk.GetImageFromArray(volume)
+
+        # Set geometry from the first slice
+        ds0 = slices[0]
+        if hasattr(ds0, "PixelSpacing"):
+            row_sp, col_sp = float(ds0.PixelSpacing[0]), float(ds0.PixelSpacing[1])
+        else:
+            row_sp = col_sp = 1.0
+
+        slice_thickness = float(getattr(ds0, "SliceThickness", 1.0) or 1.0)
+        img.SetSpacing((col_sp, row_sp, slice_thickness))
+
+        if hasattr(ds0, "ImagePositionPatient"):
+            origin = [float(v) for v in ds0.ImagePositionPatient]
+            img.SetOrigin(origin)
+
+        if hasattr(ds0, "ImageOrientationPatient"):
+            iop = [float(v) for v in ds0.ImageOrientationPatient]
+            row_dir = iop[:3]
+            col_dir = iop[3:]
+            # Normal = cross product of row and col direction cosines
+            normal = [
+                row_dir[1] * col_dir[2] - row_dir[2] * col_dir[1],
+                row_dir[2] * col_dir[0] - row_dir[0] * col_dir[2],
+                row_dir[0] * col_dir[1] - row_dir[1] * col_dir[0],
+            ]
+            direction = row_dir + col_dir + normal
+            img.SetDirection(direction)
+
+        return img
 
     @classmethod
     def sitk_to_vtk(cls, sitk_image: sitk.Image) -> vtk.vtkImageData:
@@ -130,10 +215,7 @@ class DICOMLoader:
 
     @staticmethod
     def get_series_file_names(directory: str, series_uid: str = "") -> List[str]:
-        """Return sorted DICOM file paths for a series in *directory*.
-
-        If *series_uid* is empty, returns files for the first (or only) series.
-        """
+        """Return sorted DICOM file paths for a series in *directory*."""
         if series_uid:
             return list(sitk.ImageSeriesReader.GetGDCMSeriesFileNames(directory, series_uid))
         uids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(directory)

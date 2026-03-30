@@ -39,7 +39,7 @@ class NavigationPage(WorkflowPage):
         volume_viewer: VolumeViewer,
         parent: Optional[QWidget] = None,
     ):
-        super().__init__("Navigation", parent)
+        super().__init__("Navigation", parent, show_back=True)
         self._slice_viewers  = slice_viewers
         self._volume_viewer  = volume_viewer
 

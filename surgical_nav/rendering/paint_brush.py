@@ -1,19 +1,15 @@
-"""PaintBrush: voxel-level painting on a 2-D slice plane.
+"""PaintBrush: voxel-level painting on a numpy uint8 label array.
 
-Converts a screen (display) coordinate to a world-space point on the slice
-plane, then converts that to a voxel (IJK) index in a vtkImageData label
-volume and paints a sphere of given radius.
-
-The label volume is a separate vtkImageData (uint8) that is blended over the
-anatomical slice view via vtkImageBlend.  Callers retrieve the modified
-label array as a SimpleITK image via ``get_label_sitk()``.
+Converts world-space coordinates to voxel (IJK) indices and paints a sphere
+of given radius. The label array is a plain numpy uint8 3-D array (nx, ny, nz)
+modified in-place; callers retrieve the result as a SimpleITK image via
+``get_label_sitk()``.
 
 Usage::
 
-    brush = PaintBrush(label_vtk_image)
-    # On mouse click at display (px, py) in a SliceViewer:
-    brush.paint_at_display(renderer, display_x, display_y,
-                           plane="axial", radius_voxels=3)
+    arr = PaintBrush.create_label_volume((128, 128, 64))
+    brush = PaintBrush(arr, spacing=(1.0, 1.0, 2.0), origin=(0.0, 0.0, 0.0))
+    brush.paint_at_world(64.0, 64.0, 64.0, radius_voxels=3)
     label_sitk = brush.get_label_sitk()
 """
 
@@ -23,22 +19,30 @@ from typing import Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
-import vtkmodules.all as vtk
-from vtkmodules.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 
 
 class PaintBrush:
-    """Paints voxel spheres into a label vtkImageData.
+    """Paints voxel spheres into a numpy uint8 label array.
 
     Parameters
     ----------
-    label_image : vtkImageData
-        Uint8 label volume, same geometry as the anatomical volume.
-        Modified in-place by ``paint_at_world``.
+    label_array : np.ndarray
+        3-D uint8 array of shape ``(nx, ny, nz)``, modified in-place.
+    spacing : tuple of float
+        Voxel spacing (sx, sy, sz) in mm. Default (1, 1, 1).
+    origin : tuple of float
+        Volume origin (ox, oy, oz) in mm. Default (0, 0, 0).
     """
 
-    def __init__(self, label_image: vtk.vtkImageData):
-        self._label = label_image
+    def __init__(
+        self,
+        label_array: np.ndarray,
+        spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ):
+        self._array = label_array
+        self._spacing = np.array(spacing, dtype=float)
+        self._origin = np.array(origin, dtype=float)
         self._paint_value: int = 1
 
     # ------------------------------------------------------------------
@@ -56,15 +60,7 @@ class PaintBrush:
         world_z: float,
         radius_voxels: int = 3,
     ):
-        """Paint a sphere centred at a world-space point.
-
-        Parameters
-        ----------
-        world_x, world_y, world_z : float
-            World (RAS) coordinates of the paint centre.
-        radius_voxels : int
-            Sphere radius in voxels.
-        """
+        """Paint a sphere centred at a world-space point."""
         ijk = self._world_to_ijk(world_x, world_y, world_z)
         if ijk is None:
             return
@@ -72,30 +68,14 @@ class PaintBrush:
 
     def paint_at_display(
         self,
-        renderer: vtk.vtkRenderer,
+        renderer,
         display_x: float,
         display_y: float,
         plane: str,
         radius_voxels: int = 3,
     ):
-        """Paint at a display (pixel) coordinate by unprojecting to world space.
-
-        Parameters
-        ----------
-        renderer : vtkRenderer
-            The renderer owning the camera (for unproject).
-        display_x, display_y : float
-            Mouse position in display coordinates.
-        plane : str
-            'axial' | 'coronal' | 'sagittal' — determines the Z-depth used
-            for the unproject.
-        radius_voxels : int
-            Sphere radius in voxels.
-        """
-        world = self._display_to_world(renderer, display_x, display_y, plane)
-        if world is None:
-            return
-        self.paint_at_world(*world, radius_voxels=radius_voxels)
+        """No-op without a VTK renderer."""
+        pass
 
     def erase_at_world(
         self,
@@ -112,20 +92,16 @@ class PaintBrush:
 
     def get_label_sitk(self) -> sitk.Image:
         """Return the current label volume as a SimpleITK uint8 image."""
-        dims = self._label.GetDimensions()   # (nx, ny, nz)
-        arr_flat = vtk_to_numpy(self._label.GetPointData().GetScalars())
-        # VTK stores x-fastest; reshape to (nx, ny, nz) then transpose to (nz, ny, nx) for sitk
-        arr = arr_flat.reshape(dims[0], dims[1], dims[2], order="F")
-        arr = arr.transpose(2, 1, 0).astype(np.uint8)   # (nz, ny, nx)
+        # array is (nx, ny, nz); sitk expects (nz, ny, nx)
+        arr = self._array.transpose(2, 1, 0).astype(np.uint8)
         img = sitk.GetImageFromArray(arr)
-        img.SetSpacing(self._label.GetSpacing())
-        img.SetOrigin(self._label.GetOrigin())
+        img.SetSpacing(tuple(float(s) for s in self._spacing))
+        img.SetOrigin(tuple(float(o) for o in self._origin))
         return img
 
     def clear(self):
         """Erase all painted voxels."""
-        self._label.GetPointData().GetScalars().Fill(0)
-        self._label.Modified()
+        self._array[:] = 0
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -134,17 +110,9 @@ class PaintBrush:
     def _world_to_ijk(
         self, wx: float, wy: float, wz: float
     ) -> Optional[Tuple[int, int, int]]:
-        """Convert world (RAS) to voxel (i, j, k) index.
-
-        Returns None if the point is outside the volume bounds.
-        """
-        origin  = np.array(self._label.GetOrigin())
-        spacing = np.array(self._label.GetSpacing())
-        dims    = self._label.GetDimensions()
-
-        ijk_f = (np.array([wx, wy, wz]) - origin) / spacing
-        ijk   = tuple(int(round(v)) for v in ijk_f)
-
+        dims = self._array.shape  # (nx, ny, nz)
+        ijk_f = (np.array([wx, wy, wz]) - self._origin) / self._spacing
+        ijk = tuple(int(round(v)) for v in ijk_f)
         if (0 <= ijk[0] < dims[0] and
                 0 <= ijk[1] < dims[1] and
                 0 <= ijk[2] < dims[2]):
@@ -152,57 +120,28 @@ class PaintBrush:
         return None
 
     def _paint_sphere(self, centre_ijk: Tuple[int, int, int], radius: int):
-        """Set all voxels within ``radius`` of ``centre_ijk`` to ``_paint_value``."""
-        dims = self._label.GetDimensions()
+        dims = self._array.shape
         cx, cy, cz = centre_ijk
         r2 = radius ** 2
-
         for dz in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
                 for dx in range(-radius, radius + 1):
                     if dx * dx + dy * dy + dz * dz > r2:
                         continue
-                    ix = cx + dx
-                    iy = cy + dy
-                    iz = cz + dz
+                    ix, iy, iz = cx + dx, cy + dy, cz + dz
                     if 0 <= ix < dims[0] and 0 <= iy < dims[1] and 0 <= iz < dims[2]:
-                        flat_idx = ix + iy * dims[0] + iz * dims[0] * dims[1]
-                        self._label.GetPointData().GetScalars().SetValue(
-                            flat_idx, self._paint_value
-                        )
-        self._label.Modified()
-
-    @staticmethod
-    def _display_to_world(
-        renderer: vtk.vtkRenderer,
-        display_x: float,
-        display_y: float,
-        plane: str,
-    ) -> Optional[Tuple[float, float, float]]:
-        """Unproject a display point to world coordinates on the slice plane.
-
-        Uses the renderer's camera focal point depth for the Z-buffer value,
-        placing the result on the current slice plane.
-        """
-        renderer.SetDisplayPoint(display_x, display_y, 0.5)
-        renderer.DisplayToWorld()
-        world = renderer.GetWorldPoint()
-        if world[3] == 0:
-            return None
-        w = world[3]
-        return (world[0] / w, world[1] / w, world[2] / w)
+                        self._array[ix, iy, iz] = self._paint_value
 
     # ------------------------------------------------------------------
-    # Factory: create a blank label volume matching an anatomical volume
+    # Factory
     # ------------------------------------------------------------------
 
     @classmethod
-    def create_label_volume(cls, reference: vtk.vtkImageData) -> vtk.vtkImageData:
-        """Create a blank uint8 vtkImageData with the same geometry as *reference*."""
-        label = vtk.vtkImageData()
-        label.SetDimensions(reference.GetDimensions())
-        label.SetSpacing(reference.GetSpacing())
-        label.SetOrigin(reference.GetOrigin())
-        label.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
-        label.GetPointData().GetScalars().Fill(0)
-        return label
+    def create_label_volume(
+        cls,
+        dims: Tuple[int, int, int],
+        spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> np.ndarray:
+        """Create a blank uint8 numpy array of shape *dims* = (nx, ny, nz)."""
+        return np.zeros(dims, dtype=np.uint8)

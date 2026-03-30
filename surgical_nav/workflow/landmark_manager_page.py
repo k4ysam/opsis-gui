@@ -29,7 +29,7 @@ class LandmarkManagerPage(WorkflowPage):
     """Stage 4 (optional): inspect and export all landmark/trajectory sets."""
 
     def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__("Landmark Manager", parent)
+        super().__init__("Landmark Manager", parent, show_back=True)
         self._build_ui()
 
     # ------------------------------------------------------------------
