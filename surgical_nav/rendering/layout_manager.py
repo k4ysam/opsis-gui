@@ -100,18 +100,13 @@ class LayoutManager:
     # ------------------------------------------------------------------
 
     def _build_single(self) -> QWidget:
-        """One full-size viewer.
-
-        Prefer a 2-D slice view for single-panel layouts because the 3-D
-        volume renderer is substantially heavier on some macOS/VTK setups.
-        """
+        """One full-size 3D viewer."""
         wrapper = QWidget()
         from PySide6.QtWidgets import QVBoxLayout
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        single_view = self._axial if self._axial is not None else self._volume_viewer
-        layout.addWidget(single_view)
-        single_view.show()
+        layout.addWidget(self._volume_viewer)
+        self._volume_viewer.show()
         return wrapper
 
     def _build_2up(self) -> QSplitter:

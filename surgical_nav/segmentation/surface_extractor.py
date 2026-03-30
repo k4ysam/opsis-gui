@@ -21,7 +21,6 @@ from __future__ import annotations
 import numpy as np
 import SimpleITK as sitk
 import vtkmodules.all as vtk
-import time
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
 
@@ -37,10 +36,6 @@ class SurfaceExtractor:
         self._smooth_iterations = smooth_iterations
         self._smooth_relaxation = smooth_relaxation
         self._compute_normals   = compute_normals
-
-    @staticmethod
-    def _log(message: str):
-        print(f"[timing] {message}", flush=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -65,26 +60,21 @@ class SurfaceExtractor:
         vtkPolyData
             Smoothed surface mesh.  Empty polydata if the label is all zeros.
         """
-        t0 = time.perf_counter()
         vtk_image = self._sitk_to_vtk(label_image)
 
-        # --- Isosurface extraction ---
-        if hasattr(vtk, "vtkFlyingEdges3D"):
-            extractor = vtk.vtkFlyingEdges3D()
-        else:
-            extractor = vtk.vtkMarchingCubes()
-        extractor.SetInputData(vtk_image)
-        extractor.SetValue(0, isovalue)
-        extractor.ComputeNormalsOff()
-        extractor.Update()
+        # --- Marching Cubes ---
+        mc = vtk.vtkMarchingCubes()
+        mc.SetInputData(vtk_image)
+        mc.SetValue(0, isovalue)
+        mc.ComputeNormalsOff()
+        mc.Update()
 
-        if extractor.GetOutput().GetNumberOfPoints() == 0:
-            self._log(f"surface_extract: empty mesh after {time.perf_counter() - t0:.2f}s")
+        if mc.GetOutput().GetNumberOfPoints() == 0:
             return vtk.vtkPolyData()
 
         # --- Smoothing ---
         smoother = vtk.vtkSmoothPolyDataFilter()
-        smoother.SetInputConnection(extractor.GetOutputPort())
+        smoother.SetInputConnection(mc.GetOutputPort())
         smoother.SetNumberOfIterations(self._smooth_iterations)
         smoother.SetRelaxationFactor(self._smooth_relaxation)
         smoother.FeatureEdgeSmoothingOff()
@@ -92,11 +82,6 @@ class SurfaceExtractor:
         smoother.Update()
 
         if not self._compute_normals:
-            self._log(
-                "surface_extract: "
-                f"points={smoother.GetOutput().GetNumberOfPoints():,} "
-                f"took {time.perf_counter() - t0:.2f}s"
-            )
             return smoother.GetOutput()
 
         # --- Normals ---
@@ -107,12 +92,6 @@ class SurfaceExtractor:
         normals.SplittingOff()
         normals.Update()
 
-        self._log(
-            "surface_extract: "
-            f"points={normals.GetOutput().GetNumberOfPoints():,} "
-            f"smooth_iters={self._smooth_iterations} "
-            f"took {time.perf_counter() - t0:.2f}s"
-        )
         return normals.GetOutput()
 
     # ------------------------------------------------------------------

@@ -13,7 +13,6 @@ All results are pushed to the shared SceneGraph so downstream stages
 from __future__ import annotations
 
 from typing import Optional, List
-import time
 
 import numpy as np
 import SimpleITK as sitk
@@ -23,7 +22,7 @@ from PySide6.QtWidgets import (
     QSlider, QSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QSizePolicy, QMessageBox, QHeaderView,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
+from PySide6.QtCore import Qt, Signal, QThread, QObject
 
 from surgical_nav.workflow.base_page import WorkflowPage
 from surgical_nav.app.scene_graph import (
@@ -50,18 +49,10 @@ class _SegWorker(QObject):
 
     def run(self):
         try:
-            t0 = time.perf_counter()
             seg  = ThresholdSegmenter()
             label = seg.segment_skin(self._img, self._lower, self._upper,
-                                     self._rad, shrink_factor=2)
-            t1 = time.perf_counter()
-            mesh  = SurfaceExtractor(smooth_iterations=8).extract(label)
-            t2 = time.perf_counter()
-            print(
-                f"[timing] planning skin pipeline: segmentation={t1 - t0:.2f}s "
-                f"mesh={t2 - t1:.2f}s total={t2 - t0:.2f}s",
-                flush=True,
-            )
+                                     self._rad)
+            mesh  = SurfaceExtractor(smooth_iterations=30).extract(label)
             self.finished.emit(label, mesh)
         except Exception as e:
             self.error.emit(str(e))
@@ -77,13 +68,6 @@ class PlanningPage(WorkflowPage):
     # Emitted when skin mesh or target label changes (for VolumeViewer)
     skin_mesh_ready   = Signal(object)   # vtkPolyData
     target_mesh_ready = Signal(object)   # vtkPolyData
-    target_label_updated = Signal(object)    # sitk.Image
-    seed_label_updated = Signal(object)      # np.ndarray labels: 1 inside, 2 outside
-    target_preview_updated = Signal(object)  # np.ndarray
-    trajectory_updated = Signal(object, object)  # entry_ras, target_ras
-    landmarks_updated = Signal(object)      # list[np.ndarray]
-    target_outline_updated = Signal(object, object)  # plane, outline points
-    interaction_mode_changed = Signal(str)
 
     # Emitted when the user activates/deactivates a point-placement mode.
     # Value: "entry" | "target" | "landmark" | "" (none)
@@ -110,17 +94,6 @@ class PlanningPage(WorkflowPage):
         self._vtk_image:    Optional[vtk.vtkImageData] = None
         self._skin_label:   Optional[sitk.Image]      = None
         self._target_label: Optional[sitk.Image]      = None
-        self._target_array: Optional[np.ndarray]      = None
-        self._seed_array: Optional[np.ndarray]        = None
-        self._target_preview_array: Optional[np.ndarray] = None
-        self._target_mesh_timer = QTimer(self)
-        self._target_mesh_timer.setSingleShot(True)
-        self._target_mesh_timer.setInterval(120)
-        self._target_mesh_timer.timeout.connect(self._rebuild_target_mesh)
-        self._target_overlay_timer = QTimer(self)
-        self._target_overlay_timer.setSingleShot(True)
-        self._target_overlay_timer.setInterval(33)
-        self._target_overlay_timer.timeout.connect(self._emit_step2_overlays)
 
         self._build_ui()
 
@@ -134,13 +107,7 @@ class PlanningPage(WorkflowPage):
         if isinstance(node, VolumeNode):
             self._sitk_image = node.sitk_image
             self._vtk_image  = node.vtk_image_data
-        self._last_paint_ijk = None
-        if self._sitk_image is not None and self._target_label is None:
-            self._target_array = None
-        self._seed_array = None
-        self._target_preview_array = None
         self._update_step_visibility()
-        self._emit_interaction_mode()
 
     # ------------------------------------------------------------------
     # Step 1 — Skin Segmentation
@@ -241,48 +208,30 @@ class PlanningPage(WorkflowPage):
         layout = QVBoxLayout(box)
 
         layout.addWidget(QLabel(
-            "Paint inside the target and outside the target on a few slices, "
-            "then preview the interpolated segmentation. This follows the "
-            "SlicerOpenNav inside/outside seed workflow."
+            "Click a voxel on a slice view to seed the target region, "
+            "or use the paint brush to define it manually."
         ))
+
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(QLabel("Seed HU range:"))
+        self._seed_lower = QSpinBox(); self._seed_lower.setRange(-2000, 4000)
+        self._seed_lower.setValue(50)
+        self._seed_upper = QSpinBox(); self._seed_upper.setRange(-2000, 4000)
+        self._seed_upper.setValue(300)
+        seed_row.addWidget(self._seed_lower)
+        seed_row.addWidget(QLabel("–"))
+        seed_row.addWidget(self._seed_upper)
+        layout.addLayout(seed_row)
 
         brush_row = QHBoxLayout()
         brush_row.addWidget(QLabel("Brush radius (voxels):"))
         self._brush_radius = QSpinBox(); self._brush_radius.setRange(1, 20)
         self._brush_radius.setValue(3)
         brush_row.addWidget(self._brush_radius)
-        self._paint_inside_btn = QPushButton("Paint Inside")
-        self._paint_inside_btn.setCheckable(True)
-        brush_row.addWidget(self._paint_inside_btn)
-        self._paint_outside_btn = QPushButton("Paint Outside")
-        self._paint_outside_btn.setCheckable(True)
-        brush_row.addWidget(self._paint_outside_btn)
+        self._paint_btn = QPushButton("Enable Paint Brush")
+        self._paint_btn.setCheckable(True)
+        brush_row.addWidget(self._paint_btn)
         layout.addLayout(brush_row)
-
-        action_row = QHBoxLayout()
-        self._preview_target_btn = QPushButton("Preview Target")
-        self._preview_target_btn.setEnabled(False)
-        self._preview_target_btn.clicked.connect(self._preview_target_from_seeds)
-        self._apply_target_btn = QPushButton("Apply Target")
-        self._apply_target_btn.setEnabled(False)
-        self._apply_target_btn.clicked.connect(self._apply_target_preview)
-        self._clear_seeds_btn = QPushButton("Clear Seeds")
-        self._clear_seeds_btn.setEnabled(False)
-        self._clear_seeds_btn.clicked.connect(self._clear_seed_paint)
-        self._reset_target_btn = QPushButton("Reset Target")
-        self._reset_target_btn.setEnabled(False)
-        self._reset_target_btn.clicked.connect(self._reset_target_segmentation)
-        self._update_target_mesh_btn = QPushButton("Update Target Mesh")
-        self._update_target_mesh_btn.setEnabled(False)
-        self._update_target_mesh_btn.clicked.connect(self._rebuild_target_mesh)
-        action_row.addWidget(self._preview_target_btn)
-        action_row.addWidget(self._apply_target_btn)
-        action_row.addWidget(self._clear_seeds_btn)
-        action_row.addWidget(self._reset_target_btn)
-        action_row.addWidget(self._update_target_mesh_btn)
-        layout.addLayout(action_row)
-        self._paint_inside_btn.toggled.connect(self._on_inside_mode_toggled)
-        self._paint_outside_btn.toggled.connect(self._on_outside_mode_toggled)
 
         self._target_status = QLabel("No target defined")
         self._target_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -299,159 +248,26 @@ class PlanningPage(WorkflowPage):
         layout.addLayout(nav_row)
         return box
 
-    def paint_seed_at_ijk(self, ijk: tuple, plane: str | None = None):
-        """Paint inside/outside seed voxels around an index using the brush radius."""
+    def seed_target_at_ijk(self, ijk: tuple):
+        """Called by SliceViewer when user clicks in seed mode."""
         if self._sitk_image is None:
             return
-        seed_value = self._active_seed_value()
-        if seed_value == 0:
-            return
-        radius = int(self._brush_radius.value())
-        if self._seed_array is None:
-            size = self._sitk_image.GetSize()  # x, y, z
-            self._seed_array = np.zeros((size[2], size[1], size[0]), dtype=np.uint8)
-
-        current = np.asarray(ijk, dtype=int)
-        previous = getattr(self, "_last_paint_ijk", None)
-        points = [current] if previous is None else self._interpolate_ijk_points(previous, current)
-        for point in points:
-            self._paint_target_brush(
-                self._seed_array, tuple(int(v) for v in point), radius, plane, value=seed_value
-            )
-        self._last_paint_ijk = current
-        inside = int(np.count_nonzero(self._seed_array == 1))
-        outside = int(np.count_nonzero(self._seed_array == 2))
-        self._target_status.setText(
-            f"Seeds: inside {inside:,}, outside {outside:,}. "
-            "Click 'Preview Target' to interpolate."
-        )
-        self._target_overlay_timer.start()
-        self._preview_target_btn.setEnabled(inside > 0)
-        self._clear_seeds_btn.setEnabled(inside > 0 or outside > 0)
-
-    def _emit_step2_overlays(self):
-        self.seed_label_updated.emit(self._seed_array)
-        self.target_preview_updated.emit(self._target_preview_array)
-        self.target_label_updated.emit(self._target_array)
-
-    def _preview_target_from_seeds(self):
-        if self._sitk_image is None or self._seed_array is None:
-            return
-        inside = (self._seed_array == 1).astype(np.uint8, copy=False)
-        outside = (self._seed_array == 2).astype(np.uint8, copy=False)
         seg = ThresholdSegmenter()
-        preview = seg.segment_from_seeds(self._sitk_image, inside, outside)
-        self._target_preview_array = sitk.GetArrayFromImage(preview).astype(np.uint8, copy=False)
-        voxels = int(self._target_preview_array.sum())
-        self._target_status.setText(
-            f"Preview target: {voxels:,} voxels. Click 'Apply Target' to confirm."
+        self._target_label = seg.segment_target(
+            self._sitk_image, ijk,
+            self._seed_lower.value(), self._seed_upper.value()
         )
-        self._apply_target_btn.setEnabled(voxels > 0)
-        self._reset_target_btn.setEnabled(True)
-        self._emit_step2_overlays()
-
-    def _apply_target_preview(self):
-        if self._target_preview_array is None:
-            return
-        self._target_array = self._target_preview_array.copy()
-        self._target_preview_array = None
-        self._update_target_mesh_btn.setEnabled(True)
-        n = int(self._target_array.sum())
-        self._target_status.setText(
-            f"Target: {n:,} voxels applied. Click 'Update Target Mesh' to rebuild."
+        mesh = SurfaceExtractor(smooth_iterations=15).extract(self._target_label)
+        model_node = ModelNode(
+            node_id="TARGET_MODEL",
+            vtk_poly_data=mesh,
+            color=(0.2, 0.6, 1.0),
+            opacity=0.8,
         )
-        self._apply_target_btn.setEnabled(False)
-        self._emit_step2_overlays()
-
-    def _clear_seed_paint(self):
-        self._seed_array = None
-        self._last_paint_ijk = None
-        self._preview_target_btn.setEnabled(False)
-        self._clear_seeds_btn.setEnabled(False)
-        self._emit_step2_overlays()
-
-    def _reset_target_segmentation(self):
-        self._seed_array = None
-        self._target_preview_array = None
-        self._target_array = None
-        self._target_label = None
-        self._preview_target_btn.setEnabled(False)
-        self._apply_target_btn.setEnabled(False)
-        self._clear_seeds_btn.setEnabled(False)
-        self._reset_target_btn.setEnabled(False)
-        self._update_target_mesh_btn.setEnabled(False)
-        self._target_status.setText("No target defined")
-        self._emit_step2_overlays()
-
-    def _emit_interaction_mode(self):
-        if self._step != 2:
-            mode = "navigate"
-        elif self._paint_inside_btn.isChecked() or self._paint_outside_btn.isChecked():
-            mode = "paint"
-        else:
-            mode = "navigate"
-        self.interaction_mode_changed.emit(mode)
-
-    def _on_inside_mode_toggled(self, checked: bool):
-        if checked and self._paint_outside_btn.isChecked():
-            self._paint_outside_btn.setChecked(False)
-        self._last_paint_ijk = None
-        self._emit_interaction_mode()
-
-    def _on_outside_mode_toggled(self, checked: bool):
-        if checked and self._paint_inside_btn.isChecked():
-            self._paint_inside_btn.setChecked(False)
-        self._last_paint_ijk = None
-        self._emit_interaction_mode()
-
-    def _active_seed_value(self) -> int:
-        if self._paint_inside_btn.isChecked():
-            return 1
-        if self._paint_outside_btn.isChecked():
-            return 2
-        return 0
-
-    @staticmethod
-    def _interpolate_ijk_points(start: np.ndarray, end: np.ndarray):
-        steps = int(max(np.abs(end - start).max(), 1))
-        return [
-            np.round(start + (end - start) * t).astype(int)
-            for t in np.linspace(0.0, 1.0, steps + 1)
-        ]
-
-    @staticmethod
-    def _paint_target_brush(
-        arr: np.ndarray,
-        ijk: tuple[int, int, int],
-        radius: int,
-        plane: str | None,
-        value: int = 1,
-    ):
-        ix, iy, iz = ijk
-        nz, ny, nx = arr.shape
-        r2 = radius * radius
-        dz_range = range(-radius, radius + 1) if plane not in ("axial", "coronal", "sagittal") else range(0, 1)
-        dy_range = range(-radius, radius + 1)
-        dx_range = range(-radius, radius + 1)
-
-        for dz in dz_range:
-            for dy in dy_range:
-                for dx in dx_range:
-                    if plane == "axial":
-                        dist2 = dx * dx + dy * dy
-                    elif plane == "coronal":
-                        dist2 = dx * dx + dz * dz
-                    elif plane == "sagittal":
-                        dist2 = dy * dy + dz * dz
-                    else:
-                        dist2 = dx * dx + dy * dy + dz * dz
-                    if dist2 > r2:
-                        continue
-                    x = ix + dx
-                    y = iy + dy
-                    z = iz + dz
-                    if 0 <= x < nx and 0 <= y < ny and 0 <= z < nz:
-                        arr[z, y, x] = value
+        self._scene_graph.add_node(model_node)
+        n = int(sitk.GetArrayFromImage(self._target_label).sum())
+        self._target_status.setText(f"Target: {n:,} voxels")
+        self.target_mesh_ready.emit(mesh)
 
     # ------------------------------------------------------------------
     # Step 3 — Trajectory (entry + target points)
@@ -532,10 +348,6 @@ class PlanningPage(WorkflowPage):
         self.trajectory_points_updated.emit(self._entry_xyz, self._target_xyz)
 
         self._refresh_traj_status()
-        self.trajectory_updated.emit(
-            self._get_trajectory_position("Entry"),
-            self._get_trajectory_position("Target"),
-        )
 
     def _refresh_traj_status(self):
         node = self._scene_graph.get_node("TRAJECTORY_POINTS")
@@ -545,15 +357,6 @@ class PlanningPage(WorkflowPage):
         entry  = "✓" if "Entry"  in labels else "—"
         target = "✓" if "Target" in labels else "—"
         self._traj_status.setText(f"Entry: {entry}   Target: {target}")
-
-    def _get_trajectory_position(self, label: str):
-        node = self._scene_graph.get_node("TRAJECTORY_POINTS")
-        if node is None:
-            return None
-        for point in node.points:
-            if point["label"] == label:
-                return np.asarray(point["position"], dtype=np.float64)
-        return None
 
     # ------------------------------------------------------------------
     # Step 4 — Anatomical Landmarks
@@ -616,7 +419,6 @@ class PlanningPage(WorkflowPage):
         label = f"LM{n + 1}"
         self._scene_graph.add_fiducial("PLANNING_LANDMARKS", label, world_xyz)
         self._refresh_landmark_table()
-        self.landmarks_updated.emit(self._current_landmark_positions())
 
     def _delete_landmark(self):
         row = self._lm_table.currentRow()
@@ -627,7 +429,6 @@ class PlanningPage(WorkflowPage):
             node.points.pop(row)
             self._scene_graph._fire("node_modified", node)
         self._refresh_landmark_table()
-        self.landmarks_updated.emit(self._current_landmark_positions())
 
     def _refresh_landmark_table(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")
@@ -664,12 +465,6 @@ class PlanningPage(WorkflowPage):
             node.points[row]["label"] = new_name
             self._scene_graph._fire("node_modified", node)
 
-    def _current_landmark_positions(self):
-        node = self._scene_graph.get_node("PLANNING_LANDMARKS")
-        if node is None:
-            return []
-        return [np.asarray(p["position"], dtype=np.float64) for p in node.points]
-
     def _complete_planning(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")
         n_landmarks = len(node.points) if node else 0
@@ -681,57 +476,6 @@ class PlanningPage(WorkflowPage):
             return
         self.emit_complete()
 
-    def handle_preview_click(self, plane: str, ijk: tuple, ras_xyz: tuple[float, float, float]):
-        """Handle a click from the Qt preview panes."""
-        if self._step == 2:
-            if self._paint_inside_btn.isChecked() or self._paint_outside_btn.isChecked():
-                self.paint_seed_at_ijk(ijk, plane=plane)
-            return
-        if self._step == 3:
-            point = np.asarray(ras_xyz, dtype=np.float64)
-            if self._entry_btn.isChecked():
-                self.place_trajectory_point("entry", point)
-            elif self._target_btn.isChecked():
-                self.place_trajectory_point("target", point)
-            return
-        if self._step == 4 and self._place_lm_btn.isChecked():
-            self.place_landmark(np.asarray(ras_xyz, dtype=np.float64))
-
-    def handle_preview_drag(self, plane: str, ijk: tuple, ras_xyz: tuple[float, float, float]):
-        """Handle a drag from the Qt preview panes."""
-        if self._step == 2 and (self._paint_inside_btn.isChecked() or self._paint_outside_btn.isChecked()):
-            self.paint_seed_at_ijk(ijk, plane=plane)
-        else:
-            self._last_paint_ijk = None
-
-    def _rebuild_target_mesh(self):
-        """Rebuild the target surface after painting settles."""
-        if self._sitk_image is None or self._target_array is None:
-            return
-        t0 = time.perf_counter()
-        smoothed = sitk.GetImageFromArray(self._target_array.astype(np.uint8))
-        smoothed.CopyInformation(self._sitk_image)
-        smoothed = sitk.BinaryMorphologicalClosing(smoothed, [1, 1, 1], sitk.sitkBall)
-        self._target_label = smoothed
-        mesh = SurfaceExtractor(smooth_iterations=4).extract(self._target_label)
-        model_node = ModelNode(
-            node_id="TARGET_MODEL",
-            vtk_poly_data=mesh,
-            color=(0.2, 0.6, 1.0),
-            opacity=0.8,
-        )
-        self._scene_graph.add_node(model_node)
-        self._target_array = sitk.GetArrayFromImage(self._target_label).astype(np.uint8, copy=False)
-        self._target_preview_array = None
-        self._emit_step2_overlays()
-        n = int(self._target_array.sum())
-        self._target_status.setText(
-            f"Target: {n:,} voxels — mesh updated in {time.perf_counter() - t0:.2f}s"
-        )
-        self._update_target_mesh_btn.setEnabled(False)
-        self._apply_target_btn.setEnabled(False)
-        self.target_mesh_ready.emit(mesh)
-
     # ------------------------------------------------------------------
     # Step management
     # ------------------------------------------------------------------
@@ -739,7 +483,6 @@ class PlanningPage(WorkflowPage):
     def _go_to_step(self, step: int):
         self._step = step
         self._update_step_visibility()
-        self._emit_interaction_mode()
 
     def _update_step_visibility(self):
         widgets = [self._step1_box, self._step2_box,
