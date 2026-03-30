@@ -22,6 +22,13 @@ from typing import List, Tuple
 import numpy as np
 import SimpleITK as sitk
 
+try:
+    import vtkmodules.all as vtk
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+    _VTK_AVAILABLE = True
+except ImportError:
+    _VTK_AVAILABLE = False
+
 
 class DICOMLoader:
     """Loads a sorted list of DICOM file paths into a SimpleITK image."""
@@ -150,12 +157,17 @@ class DICOMLoader:
         return img
 
     @classmethod
-    def sitk_to_vtk(cls, sitk_image: sitk.Image) -> vtk.vtkImageData:
+    def sitk_to_vtk(cls, sitk_image: sitk.Image):
         """Convert a SimpleITK image (LPS) to vtkImageData (RAS).
 
         The pixel array is the same; only the origin and direction cosines
         are flipped on X and Y (LPS → RAS).
+
+        Returns None if VTK is not available.
         """
+        if not _VTK_AVAILABLE:
+            return None
+        t0 = time.perf_counter()
         # --- Extract numpy array (z, y, x) → reorder to (x, y, z) for VTK ---
         arr = sitk.GetArrayFromImage(sitk_image)   # shape: (z, y, x)
         arr = arr.astype(np.float32)
