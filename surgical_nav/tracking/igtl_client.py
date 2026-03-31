@@ -48,14 +48,16 @@ class _IGTLWorker(QObject):
         port: int,
         store: TransformStore,
         poll_hz: float,
+        name_map: dict[str, str] = {},
     ):
         super().__init__()
-        self._host    = host
-        self._port    = port
-        self._store   = store
-        self._period  = 1.0 / max(poll_hz, 1.0)
-        self._running = False
+        self._host     = host
+        self._port     = port
+        self._store    = store
+        self._period   = 1.0 / max(poll_hz, 1.0)
+        self._running  = False
         self._statuses: dict[str, str] = {}
+        self._name_map = name_map
 
     def run(self) -> None:
         if not _PYIGTL_AVAILABLE:
@@ -72,6 +74,7 @@ class _IGTLWorker(QObject):
                 for msg in messages:
                     if isinstance(msg, pyigtl.TransformMessage):
                         name   = msg.device_name
+                        name   = self._name_map.get(name, name)
                         matrix = np.array(msg.matrix, dtype=np.float64)
                         if matrix.shape == (4, 4):
                             self._store.update(name, matrix)
@@ -145,13 +148,15 @@ class IGTLClient(QObject):
         port: int = 18944,
         store: Optional[TransformStore] = None,
         poll_hz: float = 10.0,
+        device_name_map: Optional[dict[str, str]] = None,
         parent=None,
     ):
         super().__init__(parent)
-        self._host    = host
-        self._port    = port
-        self._store   = store or TransformStore()
-        self._poll_hz = poll_hz
+        self._host     = host
+        self._port     = port
+        self._store    = store or TransformStore()
+        self._poll_hz  = poll_hz
+        self._name_map = device_name_map or {}
         self._thread: Optional[QThread]     = None
         self._worker: Optional[_IGTLWorker] = None
 
@@ -172,7 +177,8 @@ class IGTLClient(QObject):
         if self._thread is not None:
             return
         self._worker = _IGTLWorker(
-            self._host, self._port, self._store, self._poll_hz
+            self._host, self._port, self._store, self._poll_hz,
+            name_map=self._name_map,
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
