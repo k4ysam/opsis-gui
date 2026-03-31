@@ -24,6 +24,9 @@ from surgical_nav.workflow.navigation_page import NavigationPage
 from surgical_nav.workflow.landmark_manager_page import LandmarkManagerPage
 from surgical_nav.persistence.case_manager import CaseManager
 from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
+from surgical_nav.tracking.lark_igtl_client import LarkIGTLClient
+from surgical_nav.tracking.igtl_client import IGTLClient
+from surgical_nav.workflow.lark_capture_page import LarkCapturePage
 
 
 def main():
@@ -153,8 +156,14 @@ def main():
         lambda: (landmark_page.on_enter(), window.set_page(4))
     )
 
-    # --- Tracking: MockIGTLClient for development/testing ---
-    tracker = MockIGTLClient(hz=10.0)
+    # --- Tracking: select backend from TRACKER env var or settings ---
+    tracker_mode = os.environ.get("TRACKER", settings.tracker_mode)
+    if tracker_mode == "lark":
+        tracker = LarkIGTLClient(host=settings.lark_host, port=settings.lark_port)
+    elif tracker_mode == "plus":
+        tracker = IGTLClient(host="localhost", port=settings.plus_port)
+    else:
+        tracker = MockIGTLClient(hz=10.0)
 
     def on_tool_status(name: str, status: str):
         tool_key = "Pointer" if "Pointer" in name else "HeadFrame"
@@ -173,6 +182,15 @@ def main():
         lambda name, status: navigation_page.set_pointer_status(status)
         if "Pointer" in name else None
     )
+
+    # --- Stage 5: LARK Capture (unlocks after patient load) ---
+    lark_capture_page = LarkCapturePage(tracker_store=tracker.store)
+    lark_capture_page.status_message.connect(window.statusBar().showMessage)
+    tracker.transform_received.connect(lark_capture_page.on_transform)
+    tracker.tool_status_changed.connect(lark_capture_page.on_tool_status)
+    patients_page.stage_complete.connect(lark_capture_page.on_enter)
+    window.add_page(lark_capture_page)   # index 5
+
     tracker.start()
 
     window.set_page(0)
