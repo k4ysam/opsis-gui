@@ -30,6 +30,9 @@ class AppSettings:
         "plus_server_path":    None,
         "dicom_dir":           None,
         "plus_port":           18944,
+        "tracker_mode":        "mock",
+        "lark_host":           "localhost",
+        "lark_port":           18995,
         "hu_skin_low":        -500,
         "hu_skin_high":        500,
         "hu_target_low":      -100,
@@ -61,6 +64,35 @@ class AppSettings:
     @plus_port.setter
     def plus_port(self, port: int):
         self._qs.setValue("plus_port", int(port))
+
+    # ------------------------------------------------------------------
+    # LARK / Tracker
+    # ------------------------------------------------------------------
+
+    @property
+    def tracker_mode(self) -> str:
+        """Tracker backend: "mock" | "plus" | "lark"."""
+        return str(self._qs.value("tracker_mode", self._DEFAULTS["tracker_mode"]))
+
+    @tracker_mode.setter
+    def tracker_mode(self, mode: str) -> None:
+        self._qs.setValue("tracker_mode", mode)
+
+    @property
+    def lark_host(self) -> str:
+        return str(self._qs.value("lark_host", self._DEFAULTS["lark_host"]))
+
+    @lark_host.setter
+    def lark_host(self, host: str) -> None:
+        self._qs.setValue("lark_host", host)
+
+    @property
+    def lark_port(self) -> int:
+        return int(self._qs.value("lark_port", self._DEFAULTS["lark_port"]))
+
+    @lark_port.setter
+    def lark_port(self, port: int) -> None:
+        self._qs.setValue("lark_port", int(port))
 
     # ------------------------------------------------------------------
     # DICOM
@@ -149,6 +181,9 @@ class AppSettings:
         return {
             "plus_server_path": self.plus_server_path,
             "plus_port":        self.plus_port,
+            "tracker_mode":     self.tracker_mode,
+            "lark_host":        self.lark_host,
+            "lark_port":        self.lark_port,
             "dicom_dir":        self.dicom_dir,
             "hu_skin_low":      self.hu_skin_low,
             "hu_skin_high":     self.hu_skin_high,
