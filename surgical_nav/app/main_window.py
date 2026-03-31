@@ -31,7 +31,8 @@ _STAGES = [
     ("Planning",     1,  0),
     ("Registration", 2,  1),
     ("Navigation",   3,  2),
-    ("Landmarks",    4, -1),   # accessible any time after planning
+    ("Landmarks",    4, -1),
+    ("LARK Capture", 5,  0),   # unlocks after patient load
 ]
 
 
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
             "Calibrate instruments and register patient (requires planning)",
             "Real-time navigation (requires registration)",
             "Manage anatomical landmarks",
+            "Capture physical landmarks with LARK optical tracker",
         ]
 
         self._stage_actions: list[QAction] = []
@@ -139,11 +141,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def mark_stage_complete(self, stage_index: int):
-        """Unlock the next stage once the current one is done."""
+        """Unlock stages whose required_previous matches stage_index."""
         self._completed_stages.add(stage_index)
-        next_stage = stage_index + 1
-        if next_stage < len(self._stage_actions):
-            self._stage_actions[next_stage].setEnabled(True)
+        for action, (_, _, req_prev) in zip(self._stage_actions, _STAGES):
+            if req_prev == stage_index:
+                action.setEnabled(True)
 
     def _on_stage_action(self):
         action: QAction = self.sender()
