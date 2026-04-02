@@ -62,6 +62,10 @@ class RegistrationPage(WorkflowPage):
         self._image_landmarks: List[np.ndarray] = []   # from SceneGraph PLANNING_LANDMARKS
         self._surface_points:  List[np.ndarray] = []
 
+        # Latest raw PointerToTracker matrix (updated every frame)
+        self._latest_ptr: Optional[np.ndarray] = None
+        self._tracing_active = False
+
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -80,6 +84,14 @@ class RegistrationPage(WorkflowPage):
         """Feed a new tracking transform into the active collection."""
         if name != "PointerToTracker":
             return
+        self._latest_ptr = matrix
+
+        # Auto-collect surface points while tracing is active
+        if self._tracing_active:
+            tip = self._compute_tip(matrix)
+            if tip is not None:
+                self.add_surface_point(tip)
+
         if self._collecting_pivot:
             self._pivot_cal.add_sample(matrix)
             self._pivot_progress.setValue(
@@ -94,6 +106,14 @@ class RegistrationPage(WorkflowPage):
             )
             if self._spin_cal.sample_count >= _COLLECT_TARGET:
                 self._stop_spin_collection()
+
+    def _compute_tip(self, ptr_matrix: np.ndarray) -> Optional[np.ndarray]:
+        """Apply POINTER_CALIBRATION to get tip in tracker space."""
+        cal_node = self._scene_graph.get_node("POINTER_CALIBRATION")
+        if cal_node is None:
+            return None
+        tip_h = ptr_matrix @ cal_node.matrix @ np.array([0, 0, 0, 1], dtype=np.float64)
+        return tip_h[:3]
 
     def add_patient_landmark(self, world_xyz: np.ndarray):
         """Called when user touches a patient landmark point with the pointer."""
@@ -284,10 +304,29 @@ class RegistrationPage(WorkflowPage):
         self._lm_collect_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._lm_collect_status)
 
+        record_btn = QPushButton("Record Landmark")
+        record_btn.setStyleSheet(
+            "QPushButton { background: #2d6a2d; color: white; padding: 6px; border-radius: 4px; }"
+        )
+        record_btn.clicked.connect(self._record_landmark)
+        layout.addWidget(record_btn)
+
         next_btn = QPushButton("Next → Landmark Registration")
         next_btn.clicked.connect(lambda: self._go_to_step(7))
         layout.addWidget(next_btn)
         return box
+
+    def _record_landmark(self):
+        if self._latest_ptr is None:
+            QMessageBox.warning(self, "No Tracking",
+                                "No tracker data received yet.")
+            return
+        tip = self._compute_tip(self._latest_ptr)
+        if tip is None:
+            QMessageBox.warning(self, "No Calibration",
+                                "Complete pivot calibration first.")
+            return
+        self.add_patient_landmark(tip)
 
     def _load_image_landmarks(self):
         node = self._scene_graph.get_node("PLANNING_LANDMARKS")
@@ -362,6 +401,11 @@ class RegistrationPage(WorkflowPage):
 
         self._trace_btn = QPushButton("Start Tracing")
         self._trace_btn.setCheckable(True)
+        self._trace_btn.setStyleSheet(
+            "QPushButton { background: #2d6a2d; color: white; padding: 6px; border-radius: 4px; }"
+            "QPushButton:checked { background: #8b2020; }"
+        )
+        self._trace_btn.toggled.connect(self._on_trace_toggled)
         layout.addWidget(self._trace_btn)
 
         self._surface_count_lbl = QLabel("0 surface points collected")
@@ -372,6 +416,10 @@ class RegistrationPage(WorkflowPage):
         next_btn.clicked.connect(lambda: self._go_to_step(9))
         layout.addWidget(next_btn)
         return box
+
+    def _on_trace_toggled(self, active: bool):
+        self._tracing_active = active
+        self._trace_btn.setText("Stop Tracing" if active else "Start Tracing")
 
     # ------------------------------------------------------------------
     # Step 9 — ICP refinement
