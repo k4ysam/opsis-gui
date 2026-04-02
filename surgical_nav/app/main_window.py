@@ -27,11 +27,12 @@ from surgical_nav.rendering.layout_manager import LayoutManager
 
 # Workflow stage definitions: (button label, page index, required previous stage)
 _STAGES = [
-    ("Patients",     0, -1),
-    ("Planning",     1,  0),
-    ("Registration", 2,  1),
-    ("Navigation",   3,  2),
-    ("Landmarks",    4, -1),   # accessible any time after planning
+    ("Patients",      0, -1),
+    ("Planning",      1,  0),
+    ("Registration",  2,  1),
+    ("Navigation",    3,  2),
+    ("Landmarks",     4, -1),   # accessible any time
+    ("Tracking Test", 5, -1),   # accessible any time
 ]
 
 
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
             "Calibrate instruments and register patient (requires planning)",
             "Real-time navigation (requires registration)",
             "Manage anatomical landmarks",
+            "Test FALCON tracker with video files",
         ]
 
         self._stage_actions: list[QAction] = []
@@ -90,9 +92,10 @@ class MainWindow(QMainWindow):
             self._toolbar.addAction(action)
             self._stage_actions.append(action)
 
-        # Disable all stages except Patients initially
-        for action in self._stage_actions[1:]:
-            action.setEnabled(False)
+        # Disable stages that require a prerequisite; keep -1 stages always enabled
+        for action in self._stage_actions:
+            _, _, req = _STAGES[action.data()]
+            action.setEnabled(req == -1)
 
         # --- Status bar -----------------------------------------------------
         self._status_bar = QStatusBar()

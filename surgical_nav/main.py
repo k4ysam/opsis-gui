@@ -8,7 +8,16 @@ import numpy as np
 # Ensure the package root is on sys.path when run directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+# Import dateutil (and trigger its six.moves dependencies) BEFORE PySide6 loads
+# shiboken, which has a broken hook that crashes on six.moves imports.
+try:
+    import dateutil.tz      # noqa: F401
+    import dateutil.rrule   # noqa: F401
+    import dateutil.parser  # noqa: F401
+except ImportError:
+    pass
+
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QSplitter
 from PySide6.QtCore import Qt
 
 from surgical_nav.app.main_window import MainWindow
@@ -17,6 +26,7 @@ from surgical_nav.app.scene_graph import SceneGraph
 from surgical_nav.rendering.volume_viewer import VolumeViewer
 from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
+from surgical_nav.rendering.camera_panel import CameraPanel
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
 from surgical_nav.workflow.registration_page import RegistrationPage
@@ -24,6 +34,9 @@ from surgical_nav.workflow.navigation_page import NavigationPage
 from surgical_nav.workflow.landmark_manager_page import LandmarkManagerPage
 from surgical_nav.persistence.case_manager import CaseManager
 from surgical_nav.tracking.mock_igtl_client import MockIGTLClient
+from surgical_nav.tracking.falcon_tracker import FalconTracker
+from surgical_nav.workflow.tracking_test_page import TrackingTestPage
+from surgical_nav.rendering.tracking_viewer import TrackingViewer
 
 
 def main():
@@ -46,7 +59,16 @@ def main():
     lm = LayoutManager(viewer_container)
     lm.set_viewers(volume_viewer, axial, coronal, sagittal)
     lm.set_layout("6up")
-    window.set_viewer_panel(viewer_container)
+
+    camera_panel = CameraPanel(max_cameras=5, fps=30)
+
+    right_panel = QSplitter(Qt.Orientation.Horizontal)
+    right_panel.addWidget(viewer_container)
+    right_panel.addWidget(camera_panel)
+    right_panel.setStretchFactor(0, 1)
+    right_panel.setStretchFactor(1, 0)
+
+    window.set_viewer_panel(right_panel)
 
     # Shared state for auto-save
     _current_case:  list = [None]       # mutable cell
@@ -143,6 +165,31 @@ def main():
         lambda: (navigation_page.on_enter(), window.set_page(3))
     )
 
+    # --- Stage 5: Tracking Test ---
+    tracking_viewer = TrackingViewer()
+    tracking_test_page = TrackingTestPage()
+    tracking_test_page.status_message.connect(window.statusBar().showMessage)
+    window.add_page(tracking_test_page)   # index 5
+
+    def _on_tracking_started(_tracker):
+        window.set_viewer_panel(tracking_viewer)
+        tracking_viewer.open_video_feeds(tracking_test_page.get_video_paths())
+        tracking_viewer.clear_trajectory()
+        tracking_viewer.start_timers()
+
+    def _on_tracking_stopped():
+        tracking_viewer.stop_timers()
+        tracking_viewer.close_video_feeds()
+        window.set_viewer_panel(right_panel)
+
+    tracking_test_page.tracker_started.connect(_on_tracking_started)
+    tracking_test_page.tracker_stopped.connect(_on_tracking_stopped)
+    tracking_test_page.transform_received.connect(
+        lambda name, m: tracking_viewer.add_trajectory_point(
+            float(m[0, 3]), float(m[1, 3]), float(m[2, 3])
+        )
+    )
+
     # --- Stage 4: Landmark Manager ---
     landmark_page = LandmarkManagerPage()
     landmark_page.status_message.connect(window.statusBar().showMessage)
@@ -153,7 +200,7 @@ def main():
         lambda: (landmark_page.on_enter(), window.set_page(4))
     )
 
-    # --- Tracking: MockIGTLClient for development/testing ---
+    # --- Tracking: MockIGTLClient for navigation (FalconTracker is test-only) ---
     tracker = MockIGTLClient(hz=10.0)
 
     def on_tool_status(name: str, status: str):
@@ -180,6 +227,7 @@ def main():
 
     ret = app.exec()
     tracker.stop()
+    tracking_test_page.on_leave()   # stops test tracker if running
     sys.exit(ret)
 
 
