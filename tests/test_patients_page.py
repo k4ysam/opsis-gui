@@ -103,7 +103,6 @@ def test_populate_table(qapp):
 
 def test_on_load_finished_pushes_to_scene_graph(qapp):
     """Simulate a successful load and verify VolumeNode is in the SceneGraph."""
-    import vtkmodules.all as vtk
     import SimpleITK as sitk
     from surgical_nav.workflow.patients_page import PatientsPage
     from surgical_nav.app.scene_graph import VolumeNode
@@ -112,12 +111,9 @@ def test_on_load_finished_pushes_to_scene_graph(qapp):
     completed = []
     page.stage_complete.connect(lambda: completed.append(True))
 
-    vtk_img = vtk.vtkImageData()
-    vtk_img.SetDimensions(5, 5, 3)
-    vtk_img.AllocateScalars(vtk.VTK_FLOAT, 1)
     sitk_img = sitk.Image(5, 5, 3, sitk.sitkFloat32)
 
-    page._on_load_finished(vtk_img, sitk_img, "TestCase")
+    page._on_load_finished(None, sitk_img, "TestCase")
 
     node = SceneGraph.instance().get_node("ACTIVE_VOLUME")
     assert isinstance(node, VolumeNode)
