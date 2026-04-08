@@ -16,7 +16,7 @@ try:
 except ImportError:
     pass
 
-from PySide6.QtWidgets import QApplication, QLabel, QWidget, QSplitter
+from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt
 
 from surgical_nav.app.main_window import MainWindow
