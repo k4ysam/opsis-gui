@@ -25,7 +25,6 @@ from surgical_nav.app.scene_graph import SceneGraph
 from surgical_nav.rendering.volume_viewer import VolumeViewer
 from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
-from surgical_nav.rendering.camera_panel import CameraPanel
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
 from surgical_nav.workflow.registration_page import RegistrationPage
