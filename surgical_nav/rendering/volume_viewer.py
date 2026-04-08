@@ -64,9 +64,15 @@ class VolumeViewer(QWidget):
     def set_volume(self, vtk_image_data: vtk.vtkImageData):
         """Load a vtkImageData into the volume mapper and reset camera."""
         self._volume_mapper.SetInputData(vtk_image_data)
+        if not self._volume_loaded:
+            self._vtk_widget.get_renderer().AddVolume(self._volume_actor)
+            self._volume_loaded = True
         self._vtk_widget.reset_camera()
 
     def clear_volume(self):
+        if self._volume_loaded:
+            self._vtk_widget.get_renderer().RemoveVolume(self._volume_actor)
+            self._volume_loaded = False
         self._volume_mapper.RemoveAllInputs()
         self._vtk_widget.render()
 
