@@ -1,25 +1,20 @@
-"""FalconTracker: multi-camera ArUco pose tracking using the FALCON pipeline.
+"""FalconTracker: multi-camera pose tracking using the exact real_multicam.py pipeline.
 
-Matches MockIGTLClient's signal interface (transform_received, tool_status_changed,
-connected, disconnected) so it can be swapped in transparently.
+Uses:
+- DICT_APRILTAG_16h5 (same as real_multicam.py)
+- Board points loaded from .txt calibration files (MARKER_MAPPER=True, OFFSET=False)
+- AprilTag corner refinement detector params
+- pd.read_json calibration loading (camera matrix + dist coeffs per cam ID)
+- Per-camera pose_estimation.estimate_pose_board(), then anglesMean() fusion
+- Same 4x4 matrix construction as the IGT block in real_multicam.py
 
-Modes
------
-- Video mode  : pass ``video_paths`` — replay pre-recorded .mp4 files (loops).
-- Live mode   : pass ``camera_ids`` — open live OpenCV VideoCapture devices.
-
-Calibration
------------
-Reads per-camera intrinsics + extrinsics from the JSON file produced by
-FALCON's camera calibration.  The default path points to the calib file
-already in the falcon/ directory.
+Matches MockIGTLClient's signal interface so it can be swapped in transparently.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Union
@@ -27,11 +22,30 @@ from typing import Optional, List, Union
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
-# cv2, scipy, and FALCON utils are imported lazily inside the worker so that
-# importing this module never fails when OpenCV is not installed.
-
 _FALCON_TRACKING = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', '..', 'falcon', 'Tracking')
+)
+
+_DEFAULT_CALIB_CAMERA = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__), '..', '..',
+        'falcon', 'Calibration', 'calib_files', 'camera',
+        'T33_minpos_int_percam_cam1fixed.json',
+    )
+)
+_DEFAULT_CALIB_TARGET = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__), '..', '..',
+        'falcon', 'Calibration', 'calib_files', 'tool',
+        'T33_minpos_int_percam_cam1fixed_target.txt',
+    )
+)
+_DEFAULT_CALIB_REF = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__), '..', '..',
+        'falcon', 'Calibration', 'calib_files', 'tool',
+        'T33_minpos_int_percam_cam1fixed_ref.txt',
+    )
 )
 
 
@@ -39,59 +53,26 @@ def _ensure_falcon_path():
     if _FALCON_TRACKING not in sys.path:
         sys.path.insert(0, _FALCON_TRACKING)
 
-# ---------------------------------------------------------------------------
-# Defaults
-# ---------------------------------------------------------------------------
-_DEFAULT_CALIB = os.path.normpath(
-    os.path.join(
-        os.path.dirname(__file__), '..', '..',
-        'falcon', 'Calibration', 'calib_files', 'camera',
-        'T33_minpos_int_percam_cam1fixed.json',
-    )
-)
-
-# Tool (target) dodecahedron
-_TARGET_EDGE      = 24.0
-_TARGET_PENTAGON  = 27.5
-_TARGET_OFFSET    = (-0.42030256, -1.35511477, 211.53434921)
-_TARGET_IDS       = list(range(0, 11))
-
-# Reference dodecahedron (fixed to patient)
-_REF_EDGE         = 33.0
-_REF_PENTAGON     = 40.0
-_REF_IDS          = list(range(11, 22))
-
 
 # ---------------------------------------------------------------------------
-# Helpers
+# anglesMean — copied verbatim from real_multicam.py
 # ---------------------------------------------------------------------------
 
-def _circular_mean(angles_deg: np.ndarray) -> float:
-    rad = np.deg2rad(angles_deg)
-    return float(np.rad2deg(np.arctan2(np.mean(np.sin(rad)), np.mean(np.cos(rad)))))
+def _two_angle_mean(theta1: float, theta2: float) -> float:
+    if abs(theta1 - theta2) > 180:
+        return ((theta1 + theta2) / 2 + 360) % 360 - 180
+    return (theta1 + theta2) / 2
 
 
-def _pose_to_matrix(pose: np.ndarray) -> np.ndarray:
-    """Convert [X, Y, Z, Yaw, Pitch, Roll] → 4×4 transform (mm)."""
-    from scipy.spatial.transform import Rotation as R_scipy
-    rot = R_scipy.from_euler('ZYX', pose[3:6], degrees=True).as_matrix()
-    m = np.eye(4, dtype=np.float64)
-    m[:3, :3] = rot.T
-    m[:3, 3]  = pose[:3].flatten()
-    return m
-
-
-def _load_calib(calib_file: str) -> dict:
-    """Load calibration JSON → {cam_id: {matrix, dist}} dict."""
-    with open(calib_file) as f:
-        entries = json.load(f)
-    result = {}
-    for e in entries:
-        result[int(e['id'])] = {
-            'matrix': np.array(e['cameraMatrix'], dtype=np.float64),
-            'dist':   np.array(e['distCoeffs'],   dtype=np.float64),
-        }
-    return result
+def _angles_mean(thetas: np.ndarray) -> float:
+    if np.max(thetas) - np.min(thetas) > 180:
+        avg = float(thetas[0])
+        n = 1
+        for theta in thetas[1:]:
+            avg = _two_angle_mean(2 * avg * n / (n + 1), 2 * theta / (n + 1))
+            n += 1
+        return avg
+    return float(np.mean(thetas))
 
 
 # ---------------------------------------------------------------------------
@@ -106,88 +87,120 @@ class _FalconWorker(QObject):
         self,
         sources: List[Union[int, str]],
         cam_ids: List[int],
-        calib_file: str,
-        use_kalman: bool,
+        calib_camera: str,
+        calib_target: str,
+        calib_ref: str,
         fps: int,
     ):
         super().__init__()
-        self._sources    = sources      # cv2 indices or file paths
-        self._cam_ids    = cam_ids      # calibration IDs matching each source
-        self._calib_file = calib_file
-        self._use_kalman = use_kalman
-        self._fps        = fps
-        self._running    = False
+        self._sources      = sources
+        self._cam_ids      = cam_ids
+        self._calib_camera = calib_camera
+        self._calib_target = calib_target
+        self._calib_ref    = calib_ref
+        self._fps          = fps
+        self._running      = False
 
     def run(self) -> None:
         self._running = True
 
-        # --- Lazy imports (cv2 / scipy / FALCON utils) ---
+        # --- Lazy imports ---
         try:
             import cv2
         except ImportError:
             print("[FalconTracker] OpenCV not installed — tracking disabled")
             return
 
+        try:
+            import pandas as pd
+        except ImportError:
+            print("[FalconTracker] pandas not installed — tracking disabled")
+            return
+
+        try:
+            from scipy.spatial.transform import Rotation as R_scipy
+        except ImportError:
+            print("[FalconTracker] scipy not installed — tracking disabled")
+            return
+
         _ensure_falcon_path()
         try:
             from util.pose_estimation import pose_estimation as PoseEstimator
-            from util.dodecaBoard import generate as gen_dodeca
-            from util.kalman import KalmanFilterCV
         except ImportError as exc:
             print(f"[FalconTracker] FALCON utils not found: {exc}")
             return
 
-        # --- Load calibration ---
-        try:
-            calib = _load_calib(self._calib_file)
-        except Exception as exc:
-            print(f"[FalconTracker] calibration load failed: {exc}")
-            return
+        # --- ArUco dict — same as real_multicam.py ---
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_16h5)
 
-        aruco_dict   = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36H12)
-
-        # --- Build boards ---
-        target_pts   = gen_dodeca(_TARGET_EDGE, _TARGET_PENTAGON, _TARGET_OFFSET)
-        ref_pts      = gen_dodeca(_REF_EDGE,    _REF_PENTAGON)
-        target_board = cv2.aruco.Board(target_pts, aruco_dict, np.array(_TARGET_IDS))
-        ref_board    = cv2.aruco.Board(ref_pts,    aruco_dict, np.array(_REF_IDS))
-
-        # --- Detector (fast + sensitive) ---
-        # step=10/max=23 sweeps only 3 threshold windows instead of 14,
-        # giving 25x speedup with no loss in marker detection rate.
+        # --- Detector params — same as real_multicam.py ---
         det_params = cv2.aruco.DetectorParameters()
-        det_params.adaptiveThreshWinSizeMin   = 3
-        det_params.adaptiveThreshWinSizeMax   = 23
-        det_params.adaptiveThreshWinSizeStep  = 10
-        det_params.minMarkerPerimeterRate     = 0.01
-        det_params.cornerRefinementMethod     = cv2.aruco.CORNER_REFINE_SUBPIX
+        det_params.cornerRefinementMethod         = cv2.aruco.CORNER_REFINE_APRILTAG
+        det_params.cornerRefinementMaxIterations  = 1000
+        det_params.cornerRefinementMinAccuracy    = 0.001
+        det_params.adaptiveThreshWinSizeStep      = 2
+        det_params.adaptiveThreshWinSizeMax       = 30
+        det_params.adaptiveThreshConstant         = 8
         detector = cv2.aruco.ArucoDetector(aruco_dict, det_params)
 
-        # Target width for downscaling before detection (balances speed vs accuracy)
-        _DETECT_WIDTH = 960
+        # --- LM criteria — same as real_multicam.py ---
+        criteria_refineLM = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 200, 1.19209e-07
+        )
 
-        # --- Per-camera pose estimators ---
-        estimators = []
-        cam_params = []
+        # --- Pose estimator — same constructor args as real_multicam.py ---
+        pose_estimator = PoseEstimator(
+            framerate=self._fps,
+            plotting=False,
+            aruco_dict=aruco_dict,
+            LMcriteria=criteria_refineLM,
+            ransac=False,
+            ransacTreshold=8,
+        )
+
+        # --- Load board points from .txt files (MARKER_MAPPER=True, OFFSET=False) ---
+        try:
+            target_points = np.loadtxt(self._calib_target, dtype=np.float32).reshape(-1, 4, 3)
+            ref_points    = np.loadtxt(self._calib_ref,    dtype=np.float32).reshape(-1, 4, 3)
+        except Exception as exc:
+            print(f"[FalconTracker] board calibration load failed: {exc}")
+            return
+
+        target_board = cv2.aruco.Board(target_points, aruco_dict, np.arange(11))
+        ref_board    = cv2.aruco.Board(ref_points,    aruco_dict, np.arange(11, 22))
+
+        # --- Load camera calibration (pd.read_json, indexed by cam ID) ---
+        try:
+            calib_data = pd.read_json(self._calib_camera, orient='records')
+            for i, id_val in enumerate(calib_data.loc[:, 'id']):
+                calib_data.at[i, 'id'] = tuple(id_val) if isinstance(id_val, list) else id_val
+            calib_data = calib_data.set_index('id')
+            calib_data = calib_data.map(np.array)
+            calib_data = calib_data.replace(np.nan, None)
+        except Exception as exc:
+            print(f"[FalconTracker] camera calibration load failed: {exc}")
+            return
+
+        # Per-source camera matrices and dist coeffs
+        cam_matrices = []
+        dist_coeffs  = []
         for cam_id in self._cam_ids:
-            p = calib.get(cam_id, list(calib.values())[0])
-            cam_params.append(p)
-            est = PoseEstimator(framerate=self._fps, ransac=True, ransacTreshold=15)
-            est.set_camera_params(p['matrix'], p['dist'])
-            estimators.append(est)
+            try:
+                cam_matrices.append(calib_data.at[cam_id, 'cameraMatrix'])
+                dist_coeffs.append(calib_data.at[cam_id, 'distCoeffs'])
+            except KeyError:
+                # Fall back to first available calibration entry
+                first = list(calib_data.index)[0]
+                cam_matrices.append(calib_data.at[first, 'cameraMatrix'])
+                dist_coeffs.append(calib_data.at[first, 'distCoeffs'])
 
-        # --- Open captures ---
+        # --- Open video captures ---
         caps = [cv2.VideoCapture(s) for s in self._sources]
 
-        dt           = 1.0 / self._fps
-        last_status  = "NEVER_SEEN"
-        n_cams       = len(caps)
-        executor     = ThreadPoolExecutor(max_workers=n_cams)
-
-        # Kalman is always on — it predicts forward when no detection,
-        # giving smooth continuous output even at ~13% detection rate.
-        kalman       = KalmanFilterCV(freq=self._fps, calib=False)
-        kalman_ready = False
+        dt          = 1.0 / self._fps
+        last_status = "NEVER_SEEN"
+        n_cams      = len(caps)
+        executor    = ThreadPoolExecutor(max_workers=n_cams)
 
         def _process_camera(i):
             cap = caps[i]
@@ -199,74 +212,50 @@ class _FalconWorker(QObject):
                 if not ret:
                     return None
 
-            # Downscale for faster detection; scale the camera matrix accordingly
-            h, w = frame.shape[:2]
-            if w > _DETECT_WIDTH:
-                scale = _DETECT_WIDTH / w
-                frame = cv2.resize(frame, (_DETECT_WIDTH, int(h * scale)))
-                K_scaled = cam_params[i]['matrix'].copy()
-                K_scaled[0] *= scale   # fx, cx
-                K_scaled[1] *= scale   # fy, cy
-            else:
-                scale = 1.0
-                K_scaled = cam_params[i]['matrix']
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            corners, ids, _ = detector.detectMarkers(gray)
+            corners, ids, _ = detector.detectMarkers(frame)
             try:
-                pose, _ = estimators[i].estimate_pose_board(
+                pose, _ = pose_estimator.estimate_pose_board(
                     ref_board, target_board, corners, ids,
-                    K_scaled, cam_params[i]['dist'],
+                    cam_matrices[i], dist_coeffs[i],
                 )
                 return np.asarray(pose).flatten() if pose is not None else None
             except Exception:
                 return None
 
+        final_pose = np.zeros((6, 1))
+
         try:
             while self._running:
                 t_start = time.monotonic()
 
-                # Process all cameras in parallel
                 results = list(executor.map(_process_camera, range(n_cams)))
                 poses   = [r for r in results if r is not None]
 
                 if poses:
-                    poses_arr  = np.stack(poses)           # (N, 6)
-                    fused_pose = np.zeros(6)
-                    fused_pose[:3] = np.mean(poses_arr[:, :3], axis=0)
+                    poses_arr  = np.array(poses)          # (N, 6)
+                    # Translation: simple mean (same as real_multicam.py)
+                    final_pose[:3] = np.mean(poses_arr[:, :3], axis=0).reshape(3, 1)
+                    # Rotation: anglesMean (same as real_multicam.py)
                     for j in range(3, 6):
-                        fused_pose[j] = _circular_mean(poses_arr[:, j])
-
-                    measurement = fused_pose.reshape(6, 1)
-
-                    if not kalman_ready:
-                        kalman.initiate_state(measurement)
-                        kalman_ready = True
-
-                    kalman.set_measurement_matrices(1, kalman.R)
-                    kalman.set_measurement(measurement)
-                    kalman.predict()
-                    kalman.correct()
+                        final_pose[j] = _angles_mean(poses_arr[:, j])
 
                     if last_status != "SEEN":
                         last_status = "SEEN"
                         self.status_changed.emit("PointerToTracker", "SEEN")
-
-                elif kalman_ready:
-                    # No detection this frame — predict forward using velocity
-                    kalman.predict()
-
+                else:
                     if last_status == "SEEN":
                         last_status = "NOT_SEEN"
                         self.status_changed.emit("PointerToTracker", "NOT_SEEN")
 
-                # Emit smoothed pose every frame (once initialised)
-                if kalman_ready:
-                    final_pose = kalman.x[:6].flatten()
-                    matrix     = _pose_to_matrix(final_pose)
-                    self.transform_ready.emit("PointerToTracker", matrix)
+                # Build 4×4 matrix — same as IGT block in real_multicam.py
+                matrix = np.eye(4, dtype=np.float64)
+                matrix[:3, :3] = R_scipy.from_euler(
+                    'ZYX', final_pose[3:].ravel(), degrees=True
+                ).as_matrix().T
+                matrix[:3, 3] = final_pose[:3].flatten()
+                self.transform_ready.emit("PointerToTracker", matrix)
 
-                # Throttle to target fps in small increments so stop() wakes us quickly
+                # Throttle to target fps
                 sleep_time = dt - (time.monotonic() - t_start)
                 deadline = time.monotonic() + max(sleep_time, 0)
                 while self._running and time.monotonic() < deadline:
@@ -286,68 +275,60 @@ class _FalconWorker(QObject):
 # ---------------------------------------------------------------------------
 
 class FalconTracker(QObject):
-    """Multi-camera FALCON tracker.
+    """Multi-camera FALCON tracker using the real_multicam.py pipeline.
 
     Drop-in replacement for MockIGTLClient.
 
     Parameters
     ----------
     video_paths : list of str, optional
-        Paths to pre-recorded video files (one per camera).  When provided,
-        the tracker replays them in a loop — useful for offline testing.
+        Paths to pre-recorded video files (one per camera).
     camera_ids : list of int, optional
-        Live OpenCV camera device indices.  Ignored when *video_paths* given.
+        Live OpenCV camera device indices.
     calib_ids : list of int, optional
-        Calibration entry IDs (from the JSON) corresponding to each source.
-        Defaults to ``[1, 2, 3, 4, 5]`` trimmed to the number of sources.
-    calib_file : str, optional
-        Path to the FALCON camera calibration JSON.
-    use_kalman : bool
-        Enable Kalman filtering / smoothing (default False).
+        Calibration entry IDs (from the JSON) per source. Defaults to [1..N].
+    calib_camera : str
+        Path to the camera calibration JSON.
+    calib_target : str
+        Path to the target board .txt file.
+    calib_ref : str
+        Path to the reference board .txt file.
     fps : int
         Target processing rate (default 30).
     """
 
-    transform_received  = Signal(str, object)   # (name, ndarray 4×4)
-    tool_status_changed = Signal(str, str)       # (name, status)
+    transform_received  = Signal(str, object)
+    tool_status_changed = Signal(str, str)
     connected           = Signal()
     disconnected        = Signal()
 
     def __init__(
         self,
-        video_paths: Optional[List[str]] = None,
-        camera_ids:  Optional[List[int]] = None,
-        calib_ids:   Optional[List[int]] = None,
-        calib_file:  str = _DEFAULT_CALIB,
-        use_kalman:  bool = False,
-        fps:         int  = 30,
+        video_paths:   Optional[List[str]] = None,
+        camera_ids:    Optional[List[int]] = None,
+        calib_ids:     Optional[List[int]] = None,
+        calib_camera:  str = _DEFAULT_CALIB_CAMERA,
+        calib_target:  str = _DEFAULT_CALIB_TARGET,
+        calib_ref:     str = _DEFAULT_CALIB_REF,
+        fps:           int = 30,
         parent=None,
     ):
         super().__init__(parent)
 
-        if video_paths:
-            sources = video_paths
-        elif camera_ids is not None:
-            sources = camera_ids
-        else:
-            sources = []
-
+        sources = video_paths if video_paths else (camera_ids or [])
         n = len(sources)
         if calib_ids is None:
             calib_ids = list(range(1, n + 1))
 
-        self._sources    = sources
-        self._cam_ids    = calib_ids[:n]
-        self._calib_file = calib_file
-        self._use_kalman = use_kalman
-        self._fps        = fps
+        self._sources      = sources
+        self._cam_ids      = calib_ids[:n]
+        self._calib_camera = calib_camera
+        self._calib_target = calib_target
+        self._calib_ref    = calib_ref
+        self._fps          = fps
 
         self._thread: Optional[QThread]       = None
         self._worker: Optional[_FalconWorker] = None
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         if self._thread is not None:
@@ -358,7 +339,8 @@ class FalconTracker(QObject):
 
         self._worker = _FalconWorker(
             self._sources, self._cam_ids,
-            self._calib_file, self._use_kalman, self._fps,
+            self._calib_camera, self._calib_target, self._calib_ref,
+            self._fps,
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
