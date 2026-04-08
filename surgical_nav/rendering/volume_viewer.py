@@ -39,13 +39,13 @@ class VolumeViewer(QWidget):
         renderer = self._vtk_widget.get_renderer()
         renderer.SetBackground(0.05, 0.05, 0.05)
 
-        # Volume rendering pipeline
+        # Volume rendering pipeline (actor not added until data is set)
         self._volume_mapper = vtk.vtkSmartVolumeMapper()
         self._volume_property = self._make_ct_bone_property()
         self._volume_actor = vtk.vtkVolume()
         self._volume_actor.SetMapper(self._volume_mapper)
         self._volume_actor.SetProperty(self._volume_property)
-        renderer.AddVolume(self._volume_actor)
+        self._volume_loaded = False
 
         # Pointer / needle actor (cylinder by default)
         self._pointer_actor = self._make_pointer_actor()
