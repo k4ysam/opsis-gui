@@ -58,15 +58,7 @@ def main():
     lm.set_viewers(volume_viewer, axial, coronal, sagittal)
     lm.set_layout("6up")
 
-    camera_panel = CameraPanel(max_cameras=5, fps=30)
-
-    right_panel = QSplitter(Qt.Orientation.Horizontal)
-    right_panel.addWidget(viewer_container)
-    right_panel.addWidget(camera_panel)
-    right_panel.setStretchFactor(0, 1)
-    right_panel.setStretchFactor(1, 0)
-
-    window.set_viewer_panel(right_panel)
+    window.set_viewer_panel(viewer_container)
 
     # Shared state for auto-save
     _current_case:  list = [None]       # mutable cell
