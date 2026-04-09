@@ -170,7 +170,7 @@ def main():
     def _on_tracking_stopped():
         tracking_viewer.stop_timers()
         tracking_viewer.close_video_feeds()
-        window.set_viewer_panel(right_panel)
+        window.set_viewer_panel(viewer_container)
 
     tracking_test_page.tracker_started.connect(_on_tracking_started)
     tracking_test_page.tracker_stopped.connect(_on_tracking_stopped)
