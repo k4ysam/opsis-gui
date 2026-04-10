@@ -2,6 +2,7 @@
 
 import sys
 import os
+import time
 import numpy as np
 
 # Ensure the package root is on sys.path when run directly
@@ -16,7 +17,7 @@ try:
 except ImportError:
     pass
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QSplitter
 from PySide6.QtCore import Qt
 
 from surgical_nav.app.main_window import MainWindow
@@ -25,6 +26,7 @@ from surgical_nav.app.scene_graph import SceneGraph
 from surgical_nav.rendering.volume_viewer import VolumeViewer
 from surgical_nav.rendering.slice_viewer import SliceViewer
 from surgical_nav.rendering.layout_manager import LayoutManager
+from surgical_nav.rendering.camera_panel import CameraPanel
 from surgical_nav.workflow.patients_page import PatientsPage
 from surgical_nav.workflow.planning_page import PlanningPage
 from surgical_nav.workflow.registration_page import RegistrationPage
@@ -58,7 +60,15 @@ def main():
     lm.set_viewers(volume_viewer, axial, coronal, sagittal)
     lm.set_layout("6up")
 
-    window.set_viewer_panel(viewer_container)
+    camera_panel = CameraPanel(max_cameras=5, fps=30)
+
+    right_panel = QSplitter(Qt.Orientation.Horizontal)
+    right_panel.addWidget(viewer_container)
+    right_panel.addWidget(camera_panel)
+    right_panel.setStretchFactor(0, 1)
+    right_panel.setStretchFactor(1, 0)
+
+    window.set_viewer_panel(right_panel)
 
     # Shared state for auto-save
     _current_case:  list = [None]       # mutable cell
@@ -170,7 +180,7 @@ def main():
     def _on_tracking_stopped():
         tracking_viewer.stop_timers()
         tracking_viewer.close_video_feeds()
-        window.set_viewer_panel(viewer_container)
+        window.set_viewer_panel(right_panel)
 
     tracking_test_page.tracker_started.connect(_on_tracking_started)
     tracking_test_page.tracker_stopped.connect(_on_tracking_stopped)
