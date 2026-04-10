@@ -13,6 +13,9 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 
 
+_FEED_IMAGE_HEIGHT = 120   # fixed px — prevents layout from growing on first frames
+
+
 class _CameraFeed(QWidget):
     """Single camera feed: title label + live image label."""
 
@@ -34,12 +37,15 @@ class _CameraFeed(QWidget):
 
         self._image_label = QLabel()
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setMinimumHeight(120)
+        self._image_label.setFixedHeight(_FEED_IMAGE_HEIGHT)
         self._image_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self._image_label.setStyleSheet("background: #111; border: 1px solid #444;")
         layout.addWidget(self._image_label)
+
+        # Fix the total widget height so the scroll layout never shifts
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def update_frame(self):
         ret, frame = self._cap.read()

@@ -190,12 +190,14 @@ class _VideoFeed(QWidget):
 
         self._image_label = QLabel()
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setMinimumHeight(100)
+        self._image_label.setFixedHeight(110)
         self._image_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self._image_label.setStyleSheet("background: #111; border: 1px solid #444;")
         layout.addWidget(self._image_label)
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def update_frame(self):
         if not _CV2_AVAILABLE:
