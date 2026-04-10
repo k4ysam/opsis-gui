@@ -16,6 +16,25 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 
+from surgical_nav.rendering.orientation_cube import OrientationCube
+
+
+def _elev_azim_to_rot(elev_rad: float, azim_rad: float) -> np.ndarray:
+    """Build a 3×3 rotation matrix from matplotlib elev/azim angles."""
+    cam = np.array([
+        np.cos(elev_rad) * np.cos(azim_rad),
+        np.cos(elev_rad) * np.sin(azim_rad),
+        np.sin(elev_rad),
+    ])
+    up = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(up, cam)) > 0.98:
+        up = np.array([1.0, 0.0, 0.0])
+    right = np.cross(cam, up)
+    right /= np.linalg.norm(right)
+    view_up = np.cross(right, cam)
+    view_up /= np.linalg.norm(view_up)
+    return np.column_stack([right, view_up, cam])
+
 def _check_mpl() -> bool:
     try:
         import matplotlib.figure  # noqa: F401
@@ -36,14 +55,20 @@ except ImportError:
 # Trajectory canvas
 # ---------------------------------------------------------------------------
 
+_JUMP_THRESHOLD_MM = 30.0   # mm — gap larger than this starts a new segment
+
+
 class _TrajectoryCanvas(QWidget):
-    """3D scatter/line plot that accumulates tool positions."""
+    """3D scatter/line plot that accumulates tool positions.
+
+    Trajectory is stored as a list of segments so that a video loop (which
+    causes the tool position to jump) never gets connected by a straight line.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._xs: list[float] = []
-        self._ys: list[float] = []
-        self._zs: list[float] = []
+        # list of segments; each segment is a list of (x, y, z) tuples
+        self._segments: list[list[tuple[float, float, float]]] = [[]]
         self._dirty = False
 
         layout = QVBoxLayout(self)
@@ -59,6 +84,15 @@ class _TrajectoryCanvas(QWidget):
         layout.addWidget(self._canvas)
         self._style_axes()
 
+        # Orientation cube overlay (top-right corner)
+        self._cube = OrientationCube(self)
+        self._cube.resize(130, 130)
+        self._cube.orientation_changed.connect(self._on_cube_rotated)
+        # Sync cube when user drags the matplotlib plot
+        self._canvas.mpl_connect('motion_notify_event',  self._sync_cube_from_mpl)
+        self._canvas.mpl_connect('button_release_event', self._sync_cube_from_mpl)
+        self._position_cube()
+
     def _style_axes(self):
         ax = self._ax
         ax.set_facecolor('#1e1e1e')
@@ -69,16 +103,48 @@ class _TrajectoryCanvas(QWidget):
         ax.title.set_color('#eee')
         ax.set_title("Tool Trajectory", fontsize=10)
 
+    def _position_cube(self):
+        margin = 8
+        self._cube.move(self.width() - self._cube.width() - margin, margin)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_cube'):
+            self._position_cube()
+            self._cube.raise_()
+
+    def _on_cube_rotated(self, rot: np.ndarray):
+        """Cube was dragged → update matplotlib view angles."""
+        cam = rot[:, 2]
+        elev = float(np.degrees(np.arcsin(np.clip(cam[2], -1.0, 1.0))))
+        azim = float(np.degrees(np.arctan2(cam[1], cam[0])))
+        self._ax.view_init(elev=elev, azim=azim)
+        self._canvas.draw_idle()
+
+    def _sync_cube_from_mpl(self, _event=None):
+        """Matplotlib plot was dragged → sync cube to match."""
+        rot = _elev_azim_to_rot(
+            np.radians(self._ax.elev),
+            np.radians(self._ax.azim),
+        )
+        self._cube.blockSignals(True)
+        self._cube.set_rotation(rot)
+        self._cube.blockSignals(False)
+
     def add_point(self, x: float, y: float, z: float):
-        self._xs.append(x)
-        self._ys.append(y)
-        self._zs.append(z)
+        seg = self._segments[-1]
+        if seg:
+            lx, ly, lz = seg[-1]
+            dist = ((x - lx)**2 + (y - ly)**2 + (z - lz)**2) ** 0.5
+            if dist > _JUMP_THRESHOLD_MM:
+                # Large jump → video looped; start a fresh segment
+                self._segments.append([])
+                seg = self._segments[-1]
+        seg.append((x, y, z))
         self._dirty = True
 
     def clear(self):
-        self._xs.clear()
-        self._ys.clear()
-        self._zs.clear()
+        self._segments = [[]]
         self._dirty = True
 
     def refresh(self):
@@ -87,14 +153,18 @@ class _TrajectoryCanvas(QWidget):
         self._dirty = False
         self._ax.cla()
         self._style_axes()
-        if len(self._xs) > 1:
-            self._ax.plot(self._xs, self._ys, self._zs,
-                          color='#4a9eff', linewidth=1.0, alpha=0.7)
-        if self._xs:
-            self._ax.scatter(
-                [self._xs[-1]], [self._ys[-1]], [self._zs[-1]],
-                c='#ff4444', s=40, zorder=5,
-            )
+        last_pt = None
+        for seg in self._segments:
+            if len(seg) < 2:
+                if seg:
+                    last_pt = seg[-1]
+                continue
+            xs, ys, zs = zip(*seg)
+            self._ax.plot(xs, ys, zs, color='#4a9eff', linewidth=1.0, alpha=0.7)
+            last_pt = seg[-1]
+        if last_pt:
+            self._ax.scatter([last_pt[0]], [last_pt[1]], [last_pt[2]],
+                             c='#ff4444', s=40, zorder=5)
         self._canvas.draw_idle()
 
 
