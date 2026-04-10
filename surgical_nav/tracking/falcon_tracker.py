@@ -1,10 +1,10 @@
-"""FalconTracker: multi-camera pose tracking using the exact real_multicam.py pipeline.
+"""FalconTracker: multi-camera pose tracking using the real_multicam.py pipeline.
 
-Uses:
-- DICT_APRILTAG_16h5 (same as real_multicam.py)
-- Board points loaded from .txt calibration files (MARKER_MAPPER=True, OFFSET=False)
+Uses the exact same algorithm as real_multicam.py:
+- DICT_APRILTAG_16h5 aruco dict
+- Board points from .txt calibration files (MARKER_MAPPER=True, OFFSET=False)
 - AprilTag corner refinement detector params
-- pd.read_json calibration loading (camera matrix + dist coeffs per cam ID)
+- Camera calibration loaded from JSON (same file as real_multicam.py)
 - Per-camera pose_estimation.estimate_pose_board(), then anglesMean() fusion
 - Same 4x4 matrix construction as the IGT block in real_multicam.py
 
@@ -13,6 +13,7 @@ Matches MockIGTLClient's signal interface so it can be swapped in transparently.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -112,12 +113,6 @@ class _FalconWorker(QObject):
             return
 
         try:
-            import pandas as pd
-        except ImportError:
-            print("[FalconTracker] pandas not installed — tracking disabled")
-            return
-
-        try:
             from scipy.spatial.transform import Rotation as R_scipy
         except ImportError:
             print("[FalconTracker] scipy not installed — tracking disabled")
@@ -169,14 +164,11 @@ class _FalconWorker(QObject):
         target_board = cv2.aruco.Board(target_points, aruco_dict, np.arange(11))
         ref_board    = cv2.aruco.Board(ref_points,    aruco_dict, np.arange(11, 22))
 
-        # --- Load camera calibration (pd.read_json, indexed by cam ID) ---
+        # --- Load camera calibration from JSON (same file as real_multicam.py) ---
         try:
-            calib_data = pd.read_json(self._calib_camera, orient='records')
-            for i, id_val in enumerate(calib_data.loc[:, 'id']):
-                calib_data.at[i, 'id'] = tuple(id_val) if isinstance(id_val, list) else id_val
-            calib_data = calib_data.set_index('id')
-            calib_data = calib_data.map(np.array)
-            calib_data = calib_data.replace(np.nan, None)
+            with open(self._calib_camera) as f:
+                calib_entries = json.load(f)
+            calib_by_id = {int(e['id']): e for e in calib_entries}
         except Exception as exc:
             print(f"[FalconTracker] camera calibration load failed: {exc}")
             return
@@ -184,15 +176,11 @@ class _FalconWorker(QObject):
         # Per-source camera matrices and dist coeffs
         cam_matrices = []
         dist_coeffs  = []
+        fallback_id  = next(iter(calib_by_id))
         for cam_id in self._cam_ids:
-            try:
-                cam_matrices.append(calib_data.at[cam_id, 'cameraMatrix'])
-                dist_coeffs.append(calib_data.at[cam_id, 'distCoeffs'])
-            except KeyError:
-                # Fall back to first available calibration entry
-                first = list(calib_data.index)[0]
-                cam_matrices.append(calib_data.at[first, 'cameraMatrix'])
-                dist_coeffs.append(calib_data.at[first, 'distCoeffs'])
+            entry = calib_by_id.get(cam_id, calib_by_id[fallback_id])
+            cam_matrices.append(np.array(entry['cameraMatrix'], dtype=np.float64))
+            dist_coeffs.append(np.array(entry['distCoeffs'],   dtype=np.float64))
 
         # --- Open video captures ---
         caps = [cv2.VideoCapture(s) for s in self._sources]
