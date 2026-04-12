@@ -7,14 +7,17 @@ Run on any machine with Python 3.12+, VTK 9, and PySide6.
 
 ---
 
-## Features
+## Development Status
 
-| Stage | Description |
-|---|---|
-| **Patients** | Browse DICOM directories, select a series, load into all four views |
-| **Planning** | Threshold skin segmentation, paint-brush target segmentation, trajectory line placement, anatomical landmark placement |
-| **Registration** | 9-step wizard: PLUS connect → pivot calibration → spin calibration → landmark registration → surface ICP refinement |
-| **Navigation** | Real-time MPR slice scrolling, distance-to-target label, trajectory depth gauge, freeze toggle, coloured needle actor |
+| Stage | Description | Status |
+|---|---|---|
+| **Patients** | Browse DICOM directories, select a series, load into all four views | Complete |
+| **Planning** | Threshold skin segmentation, paint-brush target segmentation, trajectory line placement, anatomical landmark placement | Complete |
+| **Registration** | 9-step wizard: PLUS connect → pivot calibration → spin calibration → landmark registration → surface ICP refinement | Implemented, not yet tested end-to-end |
+| **Navigation** | Real-time MPR slice scrolling, distance-to-target label, trajectory depth gauge, freeze toggle, coloured needle actor | Implemented, not yet tested end-to-end |
+| **Tracking Test** | Offline multi-camera ArUco pose estimation pipeline with Kalman filtering — demonstrates the full FALCON tracker on recorded video | Complete and working |
+
+The tracking pipeline (Stage 5) runs fully offline against recorded video and produces real-time pose estimates with Kalman-filtered output. The 3D model viewer is active and supports simultaneous display of the CT volume, segmented surface meshes, and a tracked needle actor — all rendered together in the same scene.
 
 ---
 
@@ -26,7 +29,7 @@ python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
 # 2. Install dependencies
-pip install -r surgical_nav/requirements.txt
+pip install -r requirements.txt
 
 # 3. Run the application
 python -m surgical_nav.main
@@ -48,6 +51,7 @@ all tracker-dependent features work without physical hardware.
 | pydicom | 3.0.2 |
 | numpy | ≥ 2.0 |
 | scipy | ≥ 1.12 |
+| opencv-python | ≥ 4.13 |
 
 Optional (real tracker hardware):
 
@@ -63,8 +67,7 @@ pip install pyigtl
 pytest tests/ -v
 ```
 
-244 tests covering every module. All tests run headless (`QT_QPA_PLATFORM=offscreen`) — no
-display or GPU required.
+Tests cover every module and run headless (`QT_QPA_PLATFORM=offscreen`) — no display or GPU required.
 
 ---
 
@@ -73,7 +76,6 @@ display or GPU required.
 ```
 surgical_nav/
 ├── main.py                        # Entry point
-├── requirements.txt
 ├── app/
 │   ├── main_window.py             # QMainWindow + QStackedWidget + toolbar
 │   └── scene_graph.py             # Singleton scene graph (transforms, volumes, fiducials)
@@ -82,15 +84,21 @@ surgical_nav/
 │   ├── patients_page.py           # Stage 0: DICOM loading
 │   ├── planning_page.py           # Stage 1: segmentation + trajectory + landmarks
 │   ├── registration_page.py       # Stage 2: 9-step calibration + registration wizard
-│   └── navigation_page.py         # Stage 3: real-time MPR navigation
+│   ├── navigation_page.py         # Stage 3: real-time MPR navigation
+│   ├── landmark_manager_page.py   # Landmark table with inline renaming
+│   └── tracking_test_page.py      # Stage 5: offline video-based FALCON tracker demo
 ├── rendering/
 │   ├── vtk_widget.py              # QVTKRenderWindowInteractor wrapper
-│   ├── slice_viewer.py            # vtkImageReslice pipeline (axial/coronal/sagittal)
-│   ├── volume_viewer.py           # vtkSmartVolumeMapper + surface + needle actors
+│   ├── slice_viewer.py            # Qt/numpy MPR viewer (axial/coronal/sagittal)
+│   ├── volume_viewer.py           # vtkSmartVolumeMapper + surface meshes + needle actor
+│   ├── tracking_viewer.py         # Live multi-camera feed viewer for tracking stage
+│   ├── camera_panel.py            # Single camera feed panel with overlay
+│   ├── orientation_cube.py        # Pure-Qt 3D orientation gizmo
 │   ├── reslice_driver.py          # 20 Hz timer driving all slice viewers from tracker
 │   ├── paint_brush.py             # Voxel painting in label image
 │   └── layout_manager.py          # 2-up / 6-up layout switching
 ├── tracking/
+│   ├── falcon_tracker.py          # Multi-camera ArUco pose estimation + Kalman filter
 │   ├── igtl_client.py             # Real pyigtl OpenIGTLink client (QThread)
 │   ├── mock_igtl_client.py        # Synthetic circular-path tracker for development
 │   ├── transform_store.py         # Thread-safe transform dict
@@ -142,3 +150,8 @@ inside `showEvent()`. Both the stacked-widget panel and the viewer panel are ini
 
 **Coordinate system** — RAS throughout. SimpleITK returns LPS; the X and Y axes are flipped
 at load time in `DICOMLoader`.
+
+**FALCON Tracker** — The `FalconTracker` runs each camera in a dedicated thread pool worker,
+fuses poses across cameras, and applies a per-axis Kalman filter. Calibration is loaded from
+JSON (no pandas dependency). The tracker is designed to be swapped in place of the
+`MockIGTLClient` once hardware is available.
