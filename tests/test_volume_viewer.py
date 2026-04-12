@@ -1,4 +1,4 @@
-"""Tests for rendering/volume_viewer.py (VTK-free stub)."""
+"""Tests for rendering/volume_viewer.py (VTK-backed VolumeViewer)."""
 
 import sys
 import os
@@ -24,9 +24,12 @@ def test_volume_viewer_creates(qapp):
 
 
 def test_set_volume_does_not_crash(qapp):
+    import vtkmodules.all as vtk
     from surgical_nav.rendering.volume_viewer import VolumeViewer
     viewer = VolumeViewer()
-    viewer.set_volume(None)
+    img = vtk.vtkImageData()
+    img.SetDimensions(10, 10, 10)
+    viewer.set_volume(img)
 
 
 def test_add_model_does_not_crash(qapp):
@@ -54,7 +57,8 @@ def test_add_surface_does_not_crash(qapp):
     viewer.add_surface(None)
 
 
-def test_get_renderer_returns_none(qapp):
+def test_get_renderer_returns_renderer(qapp):
+    import vtkmodules.all as vtk
     from surgical_nav.rendering.volume_viewer import VolumeViewer
     viewer = VolumeViewer()
-    assert viewer.get_renderer() is None
+    assert isinstance(viewer.get_renderer(), vtk.vtkRenderer)
