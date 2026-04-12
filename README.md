@@ -1,9 +1,8 @@
-# SurgicalNav
+# SurgicalNav GUI
 
-A standalone Python image-guided surgical navigation application — a full reimplementation of
+A Python image-guided surgical navigation GUI component — a full reimplementation of
 [SlicerOpenNav](https://github.com/SlicerIGT/SlicerOpenNav) with no 3D Slicer dependency.
-
-Run on any machine with Python 3.12+, VTK 9, and PySide6.
+Designed to run alongside the FALCON tracker on any machine with Python 3.12+, VTK 9, and PySide6.
 
 ---
 
@@ -58,16 +57,6 @@ Optional (real tracker hardware):
 ```bash
 pip install pyigtl
 ```
-
----
-
-## Running Tests
-
-```bash
-pytest tests/ -v
-```
-
-Tests cover every module and run headless (`QT_QPA_PLATFORM=offscreen`) — no display or GPU required.
 
 ---
 
@@ -151,7 +140,6 @@ inside `showEvent()`. Both the stacked-widget panel and the viewer panel are ini
 **Coordinate system** — RAS throughout. SimpleITK returns LPS; the X and Y axes are flipped
 at load time in `DICOMLoader`.
 
-**FALCON Tracker** — The `FalconTracker` runs each camera in a dedicated thread pool worker,
-fuses poses across cameras, and applies a per-axis Kalman filter. Calibration is loaded from
-JSON (no pandas dependency). The tracker is designed to be swapped in place of the
-`MockIGTLClient` once hardware is available.
+**FALCON integration** — `FalconTracker` in `tracking/falcon_tracker.py` runs each camera in
+a dedicated thread pool worker, fuses poses across cameras, and applies a per-axis Kalman
+filter. It is a drop-in replacement for `MockIGTLClient` once hardware is connected.
